@@ -7,6 +7,7 @@
 #include <QFileInfo>
 #include <QElapsedTimer>
 #include <QLinearGradient>
+#include <QMetaObject>
 #include <QPainter>
 #include <QUrl>
 #include <algorithm>
@@ -40,7 +41,7 @@ MediaEngine::MediaEngine(AppState* state, QObject* parent)
     connect(&m_pollTimer, &QTimer::timeout, this, &MediaEngine::pollBus);
     m_pollTimer.setInterval(8); // 8ms polling (~125Hz) so Ultra (60fps) has headroom
     if (m_state) {
-        connect(m_state, &AppState::stateChanged, this, &MediaEngine::updatePreviewAudioState);
+        connect(m_state, &AppState::stateChanged, this, &MediaEngine::onAppStateChanged);
     }
 }
 
@@ -60,6 +61,7 @@ bool MediaEngine::loadFile(const QString& path)
 
     m_currentFrame = makePlaceholderFrame(path);
     emit frameReady(m_currentFrame);
+    m_latestRawFrame = m_currentFrame;
 
 #ifdef AKERA_HAS_GSTREAMER
     if (!setupPipeline()) {
@@ -81,6 +83,7 @@ bool MediaEngine::loadFile(const QString& path)
     m_effectCostMs = 0.0;
     m_lastDegraded = false;
     m_lastDegradeText.clear();
+    m_latestRawFrame = QImage{};
 
     gst_element_set_state(m_gst->playbin, GST_STATE_PAUSED);
     m_pollTimer.start();
@@ -221,6 +224,7 @@ void MediaEngine::pollBus()
     }
 
     if (!rawFrame.isNull()) {
+        m_latestRawFrame = rawFrame;
         // FPS cap: skip if we emitted a frame too recently
         const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
         const double targetFps = targetPreviewFps();
@@ -250,6 +254,19 @@ void MediaEngine::pollBus()
 #endif
 }
 
+void MediaEngine::onAppStateChanged()
+{
+    updatePreviewAudioState();
+    if (m_refreshQueued) {
+        return;
+    }
+    m_refreshQueued = true;
+    QMetaObject::invokeMethod(this, [this]() {
+        m_refreshQueued = false;
+        refreshPreviewFromCachedRaw();
+    }, Qt::QueuedConnection);
+}
+
 void MediaEngine::emitPlaybackSnapshot()
 {
     emit playbackStateChanged(m_isPlaying);
@@ -261,7 +278,7 @@ double MediaEngine::targetPreviewFps() const
 {
     if (!m_state) return 30.0;
     switch (m_state->previewMode()) {
-    case AppState::PreviewMode::Draft:    return 30.0;  // was 24 — Draft effects are cheap now
+    case AppState::PreviewMode::Draft:    return 24.0;
     case AppState::PreviewMode::Balanced: return 30.0;
     case AppState::PreviewMode::Ultra:    return 60.0;
     }
@@ -275,6 +292,29 @@ void MediaEngine::updatePreviewAudioState()
         g_object_set(G_OBJECT(m_gst->playbin), "volume", m_state->previewAudioEnabled() ? 1.0 : 0.0, nullptr);
     }
 #endif
+    emitPerfUpdate();
+}
+
+void MediaEngine::refreshPreviewFromCachedRaw()
+{
+    if (m_latestRawFrame.isNull()) {
+        return;
+    }
+
+    if (m_state) {
+        const auto runtimeCfg = PreviewEffects::buildRuntimePreviewCfg(m_state->effectSettings(), m_isPlaying);
+
+        QElapsedTimer timer;
+        timer.start();
+        m_currentFrame = PreviewEffects::applyPreview(m_latestRawFrame, runtimeCfg, m_frameIndex++);
+        const double elapsedMs = static_cast<double>(timer.nsecsElapsed()) / 1e6;
+        m_effectCostMs = (m_effectCostMs <= 0.0) ? elapsedMs : (m_effectCostMs * 0.88 + elapsedMs * 0.12);
+        m_lastDegraded = runtimeCfg.degraded;
+        m_lastDegradeText = runtimeCfg.reasons.join(QStringLiteral(", "));
+    } else {
+        m_currentFrame = m_latestRawFrame;
+    }
+    emit frameReady(m_currentFrame);
     emitPerfUpdate();
 }
 

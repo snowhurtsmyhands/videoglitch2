@@ -44,11 +44,13 @@ signals:
 
 private slots:
     void pollBus();
+    void onAppStateChanged();
 
 private:
     QImage makePlaceholderFrame(const QString& path) const;
     void emitPlaybackSnapshot();
     void updatePreviewAudioState();
+    void refreshPreviewFromCachedRaw();
     void emitPerfUpdate();
     double targetPreviewFps() const;
 
@@ -87,6 +89,8 @@ private:
     QMutex m_pendingMutex;
     QImage m_pendingFrame;
     bool m_hasPendingFrame = false;
+    QImage m_latestRawFrame;
+    bool m_refreshQueued = false;
     qint64 m_lastFrameEmitMs = 0;
 
 #ifdef AKERA_HAS_GSTREAMER

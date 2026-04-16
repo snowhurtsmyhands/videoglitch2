@@ -247,32 +247,31 @@ QWidget* ControlPanel::makeLabeledSlider(const QString& name, int min, int max, 
 void ControlPanel::applyPreset(const QString& name)
 {
     const auto p = m_presetManager->preset(name);
-    m_state->setCurrentPreset(name);
-    m_state->setTimecodeEnabled(p.timecodeEnabled);
-    m_state->setTimecodeColor(p.timecodeColor);
-    m_state->setTimecodeSize(p.timecodeSize);
-    m_state->setTimecodeX(p.timecodeX);
-    m_state->setTimecodeY(p.timecodeY);
-    m_state->setPreviewMode(p.previewMode);
-    if (p.previewMode == AppState::PreviewMode::Ultra) {
-        m_state->setPreviewAudioEnabled(true);
-    } else {
-        m_state->setPreviewAudioEnabled(false);
+    {
+        const QSignalBlocker stateBlocker(m_state);
+        m_state->setCurrentPreset(name);
+        m_state->setTimecodeEnabled(p.timecodeEnabled);
+        m_state->setTimecodeColor(p.timecodeColor);
+        m_state->setTimecodeSize(p.timecodeSize);
+        m_state->setTimecodeX(p.timecodeX);
+        m_state->setTimecodeY(p.timecodeY);
+        m_state->setPreviewMode(p.previewMode);
+        m_state->setPreviewAudioEnabled(p.previewMode == AppState::PreviewMode::Ultra);
+        m_state->setHeadGlitch(p.headGlitch);
+        m_state->setHeadGlitchSize(p.headGlitchSize);
+        m_state->setInterlace(p.interlace);
+        m_state->setFlickerAmount(p.flickerAmount);
+        m_state->setPixelSort(p.pixelSort);
+        m_state->setPixelSortSize(p.pixelSortSize);
+        m_state->setGlitch(p.glitch);
+        m_state->setGlitchBlockSize(p.glitchBlockSize);
+        m_state->setTracking(p.tracking);
+        m_state->setGrain(p.grain);
+        m_state->setGrainSize(p.grainSize);
+        m_state->setSineWarp(p.sineWarp);
+        m_state->setColorBleed(p.colorBleed);
+        m_state->setChromaShift(p.chromaShift);
     }
-    m_state->setHeadGlitch(p.headGlitch);
-    m_state->setHeadGlitchSize(p.headGlitchSize);
-    m_state->setInterlace(p.interlace);
-    m_state->setFlickerAmount(p.flickerAmount);
-    m_state->setPixelSort(p.pixelSort);
-    m_state->setPixelSortSize(p.pixelSortSize);
-    m_state->setGlitch(p.glitch);
-    m_state->setGlitchBlockSize(p.glitchBlockSize);
-    m_state->setTracking(p.tracking);
-    m_state->setGrain(p.grain);
-    m_state->setGrainSize(p.grainSize);
-    m_state->setSineWarp(p.sineWarp);
-    m_state->setColorBleed(p.colorBleed);
-    m_state->setChromaShift(p.chromaShift);
 
     {
         const QSignalBlocker b0(m_previewAudioToggle);
@@ -288,83 +287,83 @@ void ControlPanel::applyPreset(const QString& name)
     }
     {
         const QSignalBlocker b1(m_timecodeToggle);
-        m_timecodeToggle->setChecked(p.timecodeEnabled);
+        m_timecodeToggle->setChecked(m_state->timecodeEnabled());
     }
     {
         const QSignalBlocker b2(m_timecodeSizeSlider);
-        m_timecodeSizeSlider->setValue(p.timecodeSize);
+        m_timecodeSizeSlider->setValue(m_state->timecodeSize());
     }
     {
         const QSignalBlocker b3(m_timecodeXSlider);
-        m_timecodeXSlider->setValue(p.timecodeX);
+        m_timecodeXSlider->setValue(m_state->timecodeX());
     }
     {
         const QSignalBlocker b4(m_timecodeYSlider);
-        m_timecodeYSlider->setValue(p.timecodeY);
+        m_timecodeYSlider->setValue(m_state->timecodeY());
     }
     {
         const QSignalBlocker b5(m_effectSliders[QStringLiteral("Head Glitch")]);
-        m_effectSliders[QStringLiteral("Head Glitch")]->setValue(p.headGlitch);
+        m_effectSliders[QStringLiteral("Head Glitch")]->setValue(m_state->headGlitch());
     }
     {
         const QSignalBlocker b6(m_effectSliders[QStringLiteral("Interlace Flicker")]);
-        m_effectSliders[QStringLiteral("Interlace Flicker")]->setValue(p.interlace);
+        m_effectSliders[QStringLiteral("Interlace Flicker")]->setValue(m_state->interlace());
     }
     {
         const QSignalBlocker b7(m_effectSliders[QStringLiteral("Pixel Sort")]);
-        m_effectSliders[QStringLiteral("Pixel Sort")]->setValue(p.pixelSort);
+        m_effectSliders[QStringLiteral("Pixel Sort")]->setValue(m_state->pixelSort());
     }
     {
         const QSignalBlocker b8(m_effectSliders[QStringLiteral("Glitch Blocks")]);
-        m_effectSliders[QStringLiteral("Glitch Blocks")]->setValue(p.glitch);
+        m_effectSliders[QStringLiteral("Glitch Blocks")]->setValue(m_state->glitch());
     }
     {
         const QSignalBlocker b9(m_effectSliders[QStringLiteral("Tracking Error")]);
-        m_effectSliders[QStringLiteral("Tracking Error")]->setValue(p.tracking);
+        m_effectSliders[QStringLiteral("Tracking Error")]->setValue(m_state->tracking());
     }
     {
         const QSignalBlocker b10(m_effectSliders[QStringLiteral("Film Grain")]);
-        m_effectSliders[QStringLiteral("Film Grain")]->setValue(p.grain);
+        m_effectSliders[QStringLiteral("Film Grain")]->setValue(m_state->grain());
     }
     {
         const QSignalBlocker b11(m_effectSliders[QStringLiteral("Sine Warp")]);
-        m_effectSliders[QStringLiteral("Sine Warp")]->setValue(p.sineWarp);
+        m_effectSliders[QStringLiteral("Sine Warp")]->setValue(m_state->sineWarp());
     }
     {
         const QSignalBlocker b12(m_effectSliders[QStringLiteral("Color Bleed")]);
-        m_effectSliders[QStringLiteral("Color Bleed")]->setValue(p.colorBleed);
+        m_effectSliders[QStringLiteral("Color Bleed")]->setValue(m_state->colorBleed());
     }
     {
         const QSignalBlocker b13(m_effectSliders[QStringLiteral("Chroma Shift")]);
-        m_effectSliders[QStringLiteral("Chroma Shift")]->setValue(p.chromaShift);
+        m_effectSliders[QStringLiteral("Chroma Shift")]->setValue(m_state->chromaShift());
     }
     {
         const QSignalBlocker b14(m_effectSliders[QStringLiteral("Head Glitch Size")]);
-        m_effectSliders[QStringLiteral("Head Glitch Size")]->setValue(p.headGlitchSize);
+        m_effectSliders[QStringLiteral("Head Glitch Size")]->setValue(m_state->headGlitchSize());
     }
     {
         const QSignalBlocker b15(m_effectSliders[QStringLiteral("Flicker Amount")]);
-        m_effectSliders[QStringLiteral("Flicker Amount")]->setValue(p.flickerAmount);
+        m_effectSliders[QStringLiteral("Flicker Amount")]->setValue(m_state->flickerAmount());
     }
     {
         const QSignalBlocker b16(m_effectSliders[QStringLiteral("Pixel Sort Size")]);
-        m_effectSliders[QStringLiteral("Pixel Sort Size")]->setValue(p.pixelSortSize);
+        m_effectSliders[QStringLiteral("Pixel Sort Size")]->setValue(m_state->pixelSortSize());
     }
     {
         const QSignalBlocker b17(m_effectSliders[QStringLiteral("Glitch Block Size")]);
-        m_effectSliders[QStringLiteral("Glitch Block Size")]->setValue(p.glitchBlockSize);
+        m_effectSliders[QStringLiteral("Glitch Block Size")]->setValue(m_state->glitchBlockSize());
     }
     {
         const QSignalBlocker b18(m_effectSliders[QStringLiteral("Grain Size")]);
-        m_effectSliders[QStringLiteral("Grain Size")]->setValue(p.grainSize);
+        m_effectSliders[QStringLiteral("Grain Size")]->setValue(m_state->grainSize());
     }
 
-    switch (p.previewMode) {
+    switch (m_state->previewMode()) {
     case AppState::PreviewMode::Draft: m_modeGroup->button(0)->setChecked(true); break;
     case AppState::PreviewMode::Balanced: m_modeGroup->button(1)->setChecked(true); break;
     case AppState::PreviewMode::Ultra: m_modeGroup->button(2)->setChecked(true); break;
     }
-
+    m_state->notifyStateChanged();
 }
 
 void ControlPanel::setExportBusy(bool busy)
