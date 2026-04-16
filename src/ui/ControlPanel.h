@@ -36,6 +36,8 @@ private:
     PresetManager* m_presetManager;
     QButtonGroup* m_presetGroup = nullptr;
     QButtonGroup* m_modeGroup = nullptr;
+    QComboBox* m_userPresetCombo = nullptr;
+    QLineEdit* m_userPresetNameEdit = nullptr;
     QCheckBox* m_previewAudioToggle = nullptr;
     QComboBox* m_exportQualityCombo = nullptr;
     QCheckBox* m_timecodeToggle = nullptr;

@@ -172,8 +172,49 @@ void MediaEngine::setPositionMs(qint64 value)
     gst_element_seek_simple(
         m_gst->playbin,
         GST_FORMAT_TIME,
-        static_cast<GstSeekFlags>(GST_SEEK_FLAG_FLUSH | GST_SEEK_FLAG_KEY_UNIT),
+        static_cast<GstSeekFlags>(GST_SEEK_FLAG_FLUSH | GST_SEEK_FLAG_KEY_UNIT | GST_SEEK_FLAG_ACCURATE),
         target);
+    {
+        QMutexLocker lock(&m_pendingMutex);
+        m_pendingFrames.clear();
+    }
+    m_decodedFrames.clear();
+    m_effectSkipCount = 0;
+
+    if (!m_isPlaying && m_gst->appsink) {
+        GstSample* sample = gst_app_sink_try_pull_preroll(GST_APP_SINK(m_gst->appsink), 50000);
+        if (sample) {
+            GstCaps* caps = gst_sample_get_caps(sample);
+            GstBuffer* buffer = gst_sample_get_buffer(sample);
+            if (caps && buffer) {
+                GstStructure* s = gst_caps_get_structure(caps, 0);
+                int width = 0;
+                int height = 0;
+                const char* format = gst_structure_get_string(s, "format");
+                gst_structure_get_int(s, "width", &width);
+                gst_structure_get_int(s, "height", &height);
+                GstMapInfo map{};
+                if (gst_buffer_map(buffer, &map, GST_MAP_READ)) {
+                    const int bytesPerLine = width * 4;
+                    QImage frame;
+                    if (format && QByteArray(format) == "BGRA") {
+                        frame = QImage(map.data, width, height, bytesPerLine, QImage::Format_ARGB32).copy();
+                    } else {
+                        frame = QImage(map.data, width, height, bytesPerLine, QImage::Format_RGB32).copy();
+                    }
+                    qint64 ptsMs = qMax<qint64>(0, value);
+                    if (GST_BUFFER_PTS_IS_VALID(buffer)) {
+                        ptsMs = static_cast<qint64>(GST_BUFFER_PTS(buffer) / GST_MSECOND);
+                    }
+                    gst_buffer_unmap(buffer, &map);
+                    if (!frame.isNull()) {
+                        processAndEmitFrame(frame, ptsMs);
+                    }
+                }
+            }
+            gst_sample_unref(sample);
+        }
+    }
 #else
     m_positionMs = value;
     emit positionChanged(m_positionMs, m_durationMs);
@@ -252,6 +293,11 @@ void MediaEngine::renderTick()
 {
 #ifdef AKERA_HAS_GSTREAMER
     if (!m_hasPlayableMedia) {
+        return;
+    }
+    if (!m_isPlaying) {
+        // Paused: keep current frame visible, no skip accumulation and no playback-clock advancement by render loop.
+        emitPerfUpdate();
         return;
     }
 
@@ -365,10 +411,11 @@ void MediaEngine::emitPerfUpdate()
         }
     }
     const QString audio = (m_state && m_state->previewAudioEnabled()) ? QStringLiteral("audio:on") : QStringLiteral("audio:off");
+    const QString fpsText = m_isPlaying ? QStringLiteral("%1").arg(m_displayFps, 0, 'f', 1) : QStringLiteral("paused");
     const QString degrade = m_lastDegradeText.isEmpty() ? QString() : QStringLiteral(" • %1").arg(m_lastDegradeText);
     emit perfTextChanged(QStringLiteral("%1 • %2 fps • qdrop:%3 • fskip:%4 • %5%6")
                              .arg(mode)
-                             .arg(m_displayFps, 0, 'f', 1)
+                             .arg(fpsText)
                              .arg(m_frameDropCount)
                              .arg(m_effectSkipCount)
                              .arg(audio, degrade));
@@ -484,6 +531,14 @@ void MediaEngine::handleStateChanged()
     const bool nowPlaying = (state == GST_STATE_PLAYING);
     if (m_isPlaying != nowPlaying) {
         m_isPlaying = nowPlaying;
+        if (!m_isPlaying) {
+            m_displayFps = 0.0;
+            m_displayedFrameCount = 0;
+            m_effectSkipCount = 0;
+            m_decodedFrames.clear();
+        } else {
+            m_perfWindowStartMs = m_wallClock.elapsed();
+        }
         emit playbackStateChanged(m_isPlaying);
         emitPerfUpdate();
     }

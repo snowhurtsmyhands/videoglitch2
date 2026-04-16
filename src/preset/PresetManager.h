@@ -2,6 +2,7 @@
 
 #include <QObject>
 #include <QColor>
+#include <QHash>
 #include <QStringList>
 
 #include "app/AppState.h"
@@ -37,5 +38,14 @@ public:
     explicit PresetManager(QObject* parent = nullptr);
 
     QStringList builtInPresets() const;
+    QStringList userPresets() const;
     BuiltInPreset preset(const QString& name) const;
+    bool hasPreset(const QString& name) const;
+    bool saveUserPreset(const BuiltInPreset& preset);
+    bool deleteUserPreset(const QString& name);
+
+private:
+    QString userPresetPath() const;
+    QHash<QString, BuiltInPreset> loadUserPresets() const;
+    bool writeUserPresets(const QHash<QString, BuiltInPreset>& presets) const;
 };

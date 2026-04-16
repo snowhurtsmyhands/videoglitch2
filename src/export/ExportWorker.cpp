@@ -114,7 +114,9 @@ void ExportWorker::run()
         QStringLiteral("-i"), QStringLiteral("-"),
         QStringLiteral("-i"), m_inputPath,
         QStringLiteral("-map"), QStringLiteral("0:v:0"),
-        QStringLiteral("-map"), QStringLiteral("1:a?")
+        QStringLiteral("-map"), QStringLiteral("1:a?"),
+        QStringLiteral("-vsync"), QStringLiteral("cfr"),
+        QStringLiteral("-fps_mode"), QStringLiteral("cfr")
     };
 
     const bool useNvenc = hasNvenc();
@@ -182,7 +184,7 @@ void ExportWorker::run()
             QImage processed = PreviewEffects::applyExport(src.copy(), cfg, frameIndex);
 
             encoder.write(reinterpret_cast<const char*>(processed.constBits()), static_cast<qint64>(processed.sizeInBytes()));
-            if (!encoder.waitForBytesWritten(10000)) {
+            if (encoder.bytesToWrite() > static_cast<qint64>(frameSize * 10) && !encoder.waitForBytesWritten(10000)) {
                 emit finished(false, QStringLiteral("Failed writing frame to ffmpeg encoder."));
                 decoder.kill();
                 encoder.kill();

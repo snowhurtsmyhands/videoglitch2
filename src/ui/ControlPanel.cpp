@@ -68,19 +68,58 @@ ControlPanel::ControlPanel(AppState* state, PresetManager* presetManager, QWidge
     layout->addWidget(chipRow);
 
     layout->addWidget(makeSectionLabel(QStringLiteral("USER PRESETS")));
-    auto* combo = new QComboBox;
-    combo->addItems({QStringLiteral("Center"), QStringLiteral("MyPreset")});
-    auto* line = new QLineEdit(QStringLiteral("MyPreset"));
+    m_userPresetCombo = new QComboBox;
+    m_userPresetCombo->addItems(m_presetManager->userPresets());
+    m_userPresetNameEdit = new QLineEdit(QStringLiteral("MyPreset"));
     auto* presetButtons = new QWidget;
     auto* presetButtonsLayout = new QHBoxLayout(presetButtons);
     presetButtonsLayout->setContentsMargins(0, 0, 0, 0);
     presetButtonsLayout->setSpacing(6);
-    presetButtonsLayout->addWidget(new QPushButton(QStringLiteral("Save Current as Preset")));
-    presetButtonsLayout->addWidget(new QPushButton(QStringLiteral("Load Preset")));
-    presetButtonsLayout->addWidget(new QPushButton(QStringLiteral("Delete Preset")));
-    layout->addWidget(combo);
-    layout->addWidget(line);
+    auto* saveBtn = new QPushButton(QStringLiteral("Save Current as Preset"));
+    auto* loadBtn = new QPushButton(QStringLiteral("Load Preset"));
+    auto* deleteBtn = new QPushButton(QStringLiteral("Delete Preset"));
+    presetButtonsLayout->addWidget(saveBtn);
+    presetButtonsLayout->addWidget(loadBtn);
+    presetButtonsLayout->addWidget(deleteBtn);
+    layout->addWidget(m_userPresetCombo);
+    layout->addWidget(m_userPresetNameEdit);
     layout->addWidget(presetButtons);
+
+    connect(saveBtn, &QPushButton::clicked, this, [this]() {
+        if (!m_userPresetNameEdit || !m_userPresetCombo) return;
+        const QString name = m_userPresetNameEdit->text().trimmed();
+        if (name.isEmpty()) return;
+        const auto fx = m_state->effectSettings();
+        PresetManager::BuiltInPreset p {
+            name, m_state->previewMode(), m_state->timecodeEnabled(), m_state->timecodeColor(),
+            m_state->timecodeSize(), m_state->timecodeX(), m_state->timecodeY(),
+            fx.headGlitch, fx.interlace, fx.pixelSort, fx.glitch, fx.tracking, fx.grain, fx.grainSize,
+            fx.sineWarp, fx.colorBleed, fx.chromaShift, fx.pixelSortSize, fx.glitchBlockSize, fx.headGlitchSize, fx.flickerAmount
+        };
+        if (m_presetManager->saveUserPreset(p)) {
+            const QSignalBlocker block(m_userPresetCombo);
+            m_userPresetCombo->clear();
+            m_userPresetCombo->addItems(m_presetManager->userPresets());
+            m_userPresetCombo->setCurrentText(name);
+        }
+    });
+    connect(loadBtn, &QPushButton::clicked, this, [this]() {
+        if (!m_userPresetCombo) return;
+        const QString name = m_userPresetCombo->currentText().trimmed();
+        if (!name.isEmpty() && m_presetManager->hasPreset(name)) {
+            applyPreset(name);
+        }
+    });
+    connect(deleteBtn, &QPushButton::clicked, this, [this]() {
+        if (!m_userPresetCombo) return;
+        const QString name = m_userPresetCombo->currentText().trimmed();
+        if (name.isEmpty()) return;
+        if (m_presetManager->deleteUserPreset(name)) {
+            const QSignalBlocker block(m_userPresetCombo);
+            m_userPresetCombo->clear();
+            m_userPresetCombo->addItems(m_presetManager->userPresets());
+        }
+    });
 
     layout->addWidget(makeSectionLabel(QStringLiteral("PREVIEW MODE")));
     auto* modeRow = new QWidget;
@@ -246,6 +285,9 @@ QWidget* ControlPanel::makeLabeledSlider(const QString& name, int min, int max, 
 
 void ControlPanel::applyPreset(const QString& name)
 {
+    if (!m_presetManager->hasPreset(name)) {
+        return;
+    }
     const auto p = m_presetManager->preset(name);
     {
         const QSignalBlocker stateBlocker(m_state);
@@ -362,6 +404,16 @@ void ControlPanel::applyPreset(const QString& name)
     case AppState::PreviewMode::Draft: m_modeGroup->button(0)->setChecked(true); break;
     case AppState::PreviewMode::Balanced: m_modeGroup->button(1)->setChecked(true); break;
     case AppState::PreviewMode::Ultra: m_modeGroup->button(2)->setChecked(true); break;
+    }
+    if (m_userPresetNameEdit) {
+        const QSignalBlocker block(m_userPresetNameEdit);
+        m_userPresetNameEdit->setText(name);
+    }
+    if (m_userPresetCombo) {
+        const QSignalBlocker block(m_userPresetCombo);
+        if (m_userPresetCombo->findText(name) >= 0) {
+            m_userPresetCombo->setCurrentText(name);
+        }
     }
     m_state->notifyStateChanged();
 }
