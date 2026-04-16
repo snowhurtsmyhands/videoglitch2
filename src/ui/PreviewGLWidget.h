@@ -1,7 +1,7 @@
 #pragma once
 
-#include <QElapsedTimer>
 #include <QImage>
+#include <QLabel>
 #include <QMutex>
 #include <QOpenGLBuffer>
 #include <QOpenGLFunctions>
@@ -36,10 +36,10 @@ private:
     void initGeometry();
     void ensureTextureStorage(const QImage& image);
     void uploadPendingFrame();
+    void updateTimecodeOverlay();
 
     AppState* m_state = nullptr;
     QTimer m_refreshTimer;
-    QElapsedTimer m_elapsed;
 
     QImage m_pendingFrame;
     QSize m_frameSize;
@@ -53,4 +53,5 @@ private:
     QOpenGLBuffer m_vbo{QOpenGLBuffer::VertexBuffer};
     GLuint m_textures[2] = {0, 0};
     int m_frontTexture = 0;
+    QLabel* m_timecodeLabel = nullptr;
 };

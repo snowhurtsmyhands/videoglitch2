@@ -2,15 +2,29 @@
 
 #include "app/AppState.h"
 
+#include <QDebug>
+#include <algorithm>
+#include <cstddef>
 #include <QMouseEvent>
 #include <QVector2D>
-#include <QtMath>
 
 namespace {
 struct Vertex {
     QVector2D pos;
     QVector2D uv;
 };
+
+QString formatTimeText(qint64 positionMs)
+{
+    const qint64 totalSec = std::max<qint64>(0, positionMs) / 1000;
+    const qint64 hh = totalSec / 3600;
+    const qint64 mm = (totalSec / 60) % 60;
+    const qint64 ss = totalSec % 60;
+    return QStringLiteral("%1:%2:%3")
+        .arg(hh, 2, 10, QLatin1Char('0'))
+        .arg(mm, 2, 10, QLatin1Char('0'))
+        .arg(ss, 2, 10, QLatin1Char('0'));
+}
 }
 
 PreviewGLWidget::PreviewGLWidget(AppState* state, QWidget* parent)
@@ -25,10 +39,15 @@ PreviewGLWidget::PreviewGLWidget(AppState* state, QWidget* parent)
     m_refreshTimer.start();
 
     if (m_state) {
-        connect(m_state, &AppState::stateChanged, this, QOverload<>::of(&PreviewGLWidget::update));
+        connect(m_state, &AppState::stateChanged, this, [this]() {
+            updateTimecodeOverlay();
+            update();
+        });
     }
 
-    m_elapsed.start();
+    m_timecodeLabel = new QLabel(this);
+    m_timecodeLabel->setAttribute(Qt::WA_TransparentForMouseEvents);
+    m_timecodeLabel->hide();
 }
 
 PreviewGLWidget::~PreviewGLWidget()
@@ -57,6 +76,8 @@ void PreviewGLWidget::setFrame(const QImage& image)
 void PreviewGLWidget::setPlaybackPositionMs(qint64 positionMs)
 {
     m_playbackPositionMs = qMax<qint64>(0, positionMs);
+    updateTimecodeOverlay();
+    update();
 }
 
 void PreviewGLWidget::initializeGL()
@@ -82,6 +103,7 @@ void PreviewGLWidget::initializeGL()
 void PreviewGLWidget::resizeGL(int w, int h)
 {
     glViewport(0, 0, w, h);
+    updateTimecodeOverlay();
 }
 
 void PreviewGLWidget::paintGL()
@@ -105,25 +127,45 @@ void PreviewGLWidget::paintGL()
     }
 
     const AppState::EffectSettings fx = m_state ? m_state->effectSettings() : AppState::EffectSettings{};
-    const float chromaShift = static_cast<float>(fx.chromaShift) / 1000.0f;
+    const float timeSec = static_cast<float>(m_playbackPositionMs) / 1000.0f;
+    const float headGlitch = static_cast<float>(fx.headGlitch) / 100.0f;
+    const float interlaceFlicker = (static_cast<float>(fx.interlace) / 100.0f) * (static_cast<float>(fx.flickerAmount) / 100.0f);
+    const float pixelSort = static_cast<float>(fx.pixelSort) / 100.0f;
+    const float glitchBlocks = static_cast<float>(fx.glitch) / 100.0f;
+    const float trackingError = static_cast<float>(fx.tracking) / 100.0f;
     const float grainAmount = static_cast<float>(fx.grain) / 100.0f;
     const float grainSize = 1.0f + static_cast<float>(fx.grainSize) / 100.0f * 12.0f;
+    const float chromaShift = static_cast<float>(fx.chromaShift) / 1000.0f;
     const float sineWarp = static_cast<float>(fx.sineWarp) / 100.0f;
-    const float flicker = (static_cast<float>(fx.interlace) / 100.0f) * (static_cast<float>(fx.flickerAmount) / 100.0f);
-    const float bleed = static_cast<float>(fx.colorBleed) / 120.0f;
-    const float elapsedSec = static_cast<float>(m_elapsed.elapsed()) / 1000.0f;
+    const float colorBleed = static_cast<float>(fx.colorBleed) / 120.0f;
 
     m_program.bind();
     m_program.setUniformValue("uTexture", 0);
     m_program.setUniformValue("uScale", scale);
     m_program.setUniformValue("uResolution", QVector2D(static_cast<float>(frameSize.width()), static_cast<float>(frameSize.height())));
-    m_program.setUniformValue("uTime", elapsedSec + (static_cast<float>(m_playbackPositionMs) / 1000.0f));
-    m_program.setUniformValue("uChromaShift", chromaShift);
+    m_program.setUniformValue("uTime", timeSec);
+    m_program.setUniformValue("uHeadGlitch", headGlitch);
+    m_program.setUniformValue("uInterlaceFlicker", interlaceFlicker);
+    m_program.setUniformValue("uPixelSort", pixelSort);
+    m_program.setUniformValue("uGlitchBlocks", glitchBlocks);
+    m_program.setUniformValue("uTrackingError", trackingError);
     m_program.setUniformValue("uGrainAmount", grainAmount);
     m_program.setUniformValue("uGrainSize", grainSize);
+    m_program.setUniformValue("uChromaShift", chromaShift);
     m_program.setUniformValue("uSineWarp", sineWarp);
-    m_program.setUniformValue("uFlicker", flicker);
-    m_program.setUniformValue("uColorBleed", bleed);
+    m_program.setUniformValue("uColorBleed", colorBleed);
+
+    qDebug().nospace()
+        << "preview uniforms t=" << timeSec
+        << " hg=" << headGlitch
+        << " if=" << interlaceFlicker
+        << " ps=" << pixelSort
+        << " gb=" << glitchBlocks
+        << " tr=" << trackingError
+        << " gr=" << grainAmount
+        << " gs=" << grainSize
+        << " cs=" << chromaShift
+        << " sw=" << sineWarp;
 
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, m_textures[m_frontTexture]);
@@ -166,29 +208,58 @@ void PreviewGLWidget::initShaders()
         uniform sampler2D uTexture;
         uniform vec2 uResolution;
         uniform float uTime;
-        uniform float uChromaShift;
+        uniform float uHeadGlitch;
+        uniform float uInterlaceFlicker;
+        uniform float uPixelSort;
+        uniform float uGlitchBlocks;
+        uniform float uTrackingError;
         uniform float uGrainAmount;
         uniform float uGrainSize;
+        uniform float uChromaShift;
         uniform float uSineWarp;
-        uniform float uFlicker;
         uniform float uColorBleed;
 
-        float rand(vec2 co) {
-            return fract(sin(dot(co, vec2(12.9898, 78.233))) * 43758.5453);
+        float hash(vec2 p) {
+            return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
+        }
+
+        vec3 sortChannels(vec3 c) {
+            if (c.r > c.g) { float t = c.r; c.r = c.g; c.g = t; }
+            if (c.g > c.b) { float t = c.g; c.g = c.b; c.b = t; }
+            if (c.r > c.g) { float t = c.r; c.r = c.g; c.g = t; }
+            return c;
         }
 
         void main() {
             vec2 uv = vUv;
+            vec2 pixel = 1.0 / max(uResolution, vec2(1.0));
+
+            float trackLine = step(0.82, hash(vec2(floor(uv.y * 220.0), floor(uTime * 30.0))));
+            uv.x += (hash(vec2(floor(uv.y * 200.0), floor(uTime * 45.0))) - 0.5) * 0.12 * uTrackingError * trackLine;
+
+            float blockRand = hash(floor(uv * vec2(24.0, 14.0) + floor(uTime * 20.0)));
+            if (blockRand > 1.0 - uGlitchBlocks * 0.75) {
+                uv.x = fract(uv.x + (hash(vec2(blockRand, uTime)) - 0.5) * 0.22 * uGlitchBlocks);
+            }
+
+            float headZone = step(uv.y, 0.22 + 0.18 * uHeadGlitch);
+            float headCell = hash(floor(uv * vec2(38.0, 20.0) + vec2(uTime * 10.0, uTime * 6.0)));
+            if (headZone > 0.5 && headCell > 0.75) {
+                if (headCell > 0.9) {
+                    fragColor = vec4(vec3(0.0), 1.0);
+                    return;
+                }
+                uv.x = fract(uv.x + (headCell - 0.5) * 0.15 * uHeadGlitch);
+            }
+
             float warp = sin((uv.y * 24.0) + (uTime * 4.0)) * (0.006 * uSineWarp);
             uv.x = fract(uv.x + warp);
 
-            vec2 pixel = 1.0 / max(uResolution, vec2(1.0));
             vec2 chroma = vec2(uChromaShift, 0.0);
-
-            float r = texture(uTexture, clamp(uv + chroma, vec2(0.0), vec2(1.0))).r;
-            float g = texture(uTexture, uv).g;
-            float b = texture(uTexture, clamp(uv - chroma, vec2(0.0), vec2(1.0))).b;
-            vec3 color = vec3(r, g, b);
+            vec3 color;
+            color.r = texture(uTexture, clamp(uv + chroma, vec2(0.0), vec2(1.0))).r;
+            color.g = texture(uTexture, uv).g;
+            color.b = texture(uTexture, clamp(uv - chroma, vec2(0.0), vec2(1.0))).b;
 
             if (uColorBleed > 0.0) {
                 vec3 bleedL = texture(uTexture, clamp(uv - vec2(pixel.x * 2.0, 0.0), vec2(0.0), vec2(1.0))).rgb;
@@ -196,15 +267,21 @@ void PreviewGLWidget::initShaders()
                 color = mix(color, (bleedL + color + bleedR) / 3.0, clamp(uColorBleed, 0.0, 1.0));
             }
 
+            float psLine = step(0.72, hash(vec2(floor(uv.y * 170.0), floor(uTime * 14.0))));
+            if (psLine > 0.5 && uPixelSort > 0.0) {
+                color = mix(color, sortChannels(color), uPixelSort * 0.9);
+            }
+
             float line = step(0.5, fract((gl_FragCoord.y + uTime * 20.0) * 0.5));
             float flickerWave = 0.94 + 0.06 * sin(uTime * 24.0 + gl_FragCoord.y * 0.12);
-            float interlace = mix(1.0, line * flickerWave + (1.0 - line), clamp(uFlicker, 0.0, 1.0));
+            float interlace = mix(1.0, line * flickerWave + (1.0 - line), clamp(uInterlaceFlicker, 0.0, 1.0));
             color *= interlace;
 
-            float noise = rand(floor(vUv * uResolution / max(uGrainSize, 1.0)) + vec2(uTime * 30.0));
+            float noise = hash(floor((uv + vec2(uTime)) * uResolution / max(uGrainSize, 1.0)));
             color += (noise - 0.5) * (0.25 * uGrainAmount);
 
-            fragColor = vec4(clamp(color, 0.0, 1.0), 1.0);
+            vec3 modifiedColor = clamp(color, 0.0, 1.0);
+            fragColor = vec4(modifiedColor, 1.0);
         }
     )";
 
@@ -292,4 +369,34 @@ void PreviewGLWidget::uploadPendingFrame()
                     frame.constBits());
     glBindTexture(GL_TEXTURE_2D, 0);
     m_hasTexture = true;
+}
+
+void PreviewGLWidget::updateTimecodeOverlay()
+{
+    if (!m_timecodeLabel || !m_state) {
+        return;
+    }
+
+    if (!m_state->timecodeEnabled()) {
+        m_timecodeLabel->hide();
+        return;
+    }
+
+    const QString text = m_state->timecodeTemplate().replace(QStringLiteral("{time}"), formatTimeText(m_playbackPositionMs));
+    QFont f(QStringLiteral("Consolas"));
+    f.setPixelSize(m_state->timecodeSize());
+    m_timecodeLabel->setFont(f);
+    const QColor color = m_state->timecodeColor();
+    m_timecodeLabel->setStyleSheet(QStringLiteral("color: rgba(%1,%2,%3,%4); background: transparent;")
+                                       .arg(color.red())
+                                       .arg(color.green())
+                                       .arg(color.blue())
+                                       .arg(color.alpha()));
+    m_timecodeLabel->setText(text);
+    m_timecodeLabel->adjustSize();
+
+    const int x = (width() * m_state->timecodeX()) / 100;
+    const int y = (height() * m_state->timecodeY()) / 100;
+    m_timecodeLabel->move(x, y);
+    m_timecodeLabel->show();
 }

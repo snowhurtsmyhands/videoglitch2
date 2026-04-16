@@ -98,6 +98,7 @@ private:
     qint64 m_perfWindowStartMs = 0;
     int m_displayedFrameCount = 0;
     double m_displayFps = 0.0;
+    bool m_presentPausedFrameRequested = false;
 
 #ifdef AKERA_HAS_GSTREAMER
     GstHandles* m_gst = nullptr;

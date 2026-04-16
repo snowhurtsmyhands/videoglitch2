@@ -89,6 +89,7 @@ bool MediaEngine::loadFile(const QString& path)
     m_decodedFrames.clear();
     m_displayedFrameCount = 0;
     m_displayFps = 0.0;
+    m_presentPausedFrameRequested = true;
     m_perfWindowStartMs = m_wallClock.elapsed();
 
     gst_element_set_state(m_gst->playbin, GST_STATE_PAUSED);
@@ -173,6 +174,8 @@ void MediaEngine::setPositionMs(qint64 value)
     }
     m_decodedFrames.clear();
     m_renderSkipCount = 0;
+    m_positionMs = qMax<qint64>(0, value);
+    emit positionChanged(m_positionMs, m_durationMs);
 
     if (!m_isPlaying && m_gst->appsink) {
         GstSample* sample = gst_app_sink_try_pull_preroll(GST_APP_SINK(m_gst->appsink), 50000);
@@ -207,6 +210,7 @@ void MediaEngine::setPositionMs(qint64 value)
             }
             gst_sample_unref(sample);
         }
+        m_presentPausedFrameRequested = true;
     }
 #else
     m_positionMs = value;
@@ -278,6 +282,19 @@ void MediaEngine::pollBus()
             m_decodedFrames.pop_front();
             ++m_frameDropCount;
         }
+    }
+
+    if (!m_isPlaying && m_presentPausedFrameRequested && !m_decodedFrames.empty()) {
+        DecodedFrame selected = m_decodedFrames.front();
+        for (const auto& frame : m_decodedFrames) {
+            if (frame.ptsMs >= 0 && frame.ptsMs <= m_positionMs) {
+                selected = frame;
+            } else if (frame.ptsMs > m_positionMs) {
+                break;
+            }
+        }
+        processAndEmitFrame(selected.image, selected.ptsMs);
+        m_presentPausedFrameRequested = false;
     }
 #endif
 }
@@ -500,7 +517,7 @@ void MediaEngine::handleStateChanged()
             m_displayFps = 0.0;
             m_displayedFrameCount = 0;
             m_renderSkipCount = 0;
-            m_decodedFrames.clear();
+            m_presentPausedFrameRequested = true;
         } else {
             m_perfWindowStartMs = m_wallClock.elapsed();
         }
