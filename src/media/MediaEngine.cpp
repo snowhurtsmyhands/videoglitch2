@@ -3,6 +3,7 @@
 #include "app/AppState.h"
 
 #include <QFileInfo>
+#include <QDebug>
 #include <QElapsedTimer>
 #include <QLinearGradient>
 #include <QPainter>
@@ -178,6 +179,7 @@ void MediaEngine::setPositionMs(qint64 value)
     emit positionChanged(m_positionMs, m_durationMs);
 
     if (!m_isPlaying && m_gst->appsink) {
+        qDebug() << "paused seek requested targetMs=" << m_positionMs;
         GstSample* sample = gst_app_sink_try_pull_preroll(GST_APP_SINK(m_gst->appsink), 50000);
         if (sample) {
             GstCaps* caps = gst_sample_get_caps(sample);
@@ -204,6 +206,7 @@ void MediaEngine::setPositionMs(qint64 value)
                     }
                     gst_buffer_unmap(buffer, &map);
                     if (!frame.isNull()) {
+                        qDebug() << "paused seek pulled preroll frame ptsMs=" << ptsMs;
                         processAndEmitFrame(frame, ptsMs);
                     }
                 }
@@ -293,6 +296,7 @@ void MediaEngine::pollBus()
                 break;
             }
         }
+        qDebug() << "paused seek presenting buffered frame ptsMs=" << selected.ptsMs << " clockMs=" << m_positionMs;
         processAndEmitFrame(selected.image, selected.ptsMs);
         m_presentPausedFrameRequested = false;
     }
@@ -379,6 +383,7 @@ void MediaEngine::processAndEmitFrame(const QImage& rawFrame, qint64 ptsMs)
         m_perfWindowStartMs = nowMs;
     }
 
+    qDebug() << "display frame ptsMs=" << m_latestRawPtsMs << " positionMs=" << m_positionMs;
     emit frameReady(m_currentFrame);
     emitPerfUpdate();
 }

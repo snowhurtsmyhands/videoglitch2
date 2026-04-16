@@ -165,7 +165,13 @@ void PreviewGLWidget::paintGL()
         << " gr=" << grainAmount
         << " gs=" << grainSize
         << " cs=" << chromaShift
-        << " sw=" << sineWarp;
+        << " sw=" << sineWarp
+        << " enabled[hg=" << (headGlitch > 0.0f)
+        << ",if=" << (interlaceFlicker > 0.0f)
+        << ",ps=" << (pixelSort > 0.0f)
+        << ",gb=" << (glitchBlocks > 0.0f)
+        << ",tr=" << (trackingError > 0.0f)
+        << "]";
 
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, m_textures[m_frontTexture]);
@@ -234,51 +240,72 @@ void PreviewGLWidget::initShaders()
             vec2 uv = vUv;
             vec2 pixel = 1.0 / max(uResolution, vec2(1.0));
 
-            float trackLine = step(0.82, hash(vec2(floor(uv.y * 220.0), floor(uTime * 30.0))));
-            uv.x += (hash(vec2(floor(uv.y * 200.0), floor(uTime * 45.0))) - 0.5) * 0.12 * uTrackingError * trackLine;
-
-            float blockRand = hash(floor(uv * vec2(24.0, 14.0) + floor(uTime * 20.0)));
-            if (blockRand > 1.0 - uGlitchBlocks * 0.75) {
-                uv.x = fract(uv.x + (hash(vec2(blockRand, uTime)) - 0.5) * 0.22 * uGlitchBlocks);
+            if (uTrackingError > 0.0001) {
+                float trackLine = step(0.82, hash(vec2(floor(uv.y * 220.0), floor(uTime * 30.0))));
+                uv.x += (hash(vec2(floor(uv.y * 200.0), floor(uTime * 45.0))) - 0.5) * 0.12 * uTrackingError * trackLine;
             }
 
-            float headZone = step(uv.y, 0.22 + 0.18 * uHeadGlitch);
-            float headCell = hash(floor(uv * vec2(38.0, 20.0) + vec2(uTime * 10.0, uTime * 6.0)));
-            if (headZone > 0.5 && headCell > 0.75) {
-                if (headCell > 0.9) {
-                    fragColor = vec4(vec3(0.0), 1.0);
-                    return;
+            if (uGlitchBlocks > 0.0001) {
+                float blockRand = hash(floor(uv * vec2(24.0, 14.0) + floor(uTime * 20.0)));
+                if (blockRand > 1.0 - uGlitchBlocks * 0.75) {
+                    uv.x = fract(uv.x + (hash(vec2(blockRand, uTime)) - 0.5) * 0.22 * uGlitchBlocks);
                 }
-                uv.x = fract(uv.x + (headCell - 0.5) * 0.15 * uHeadGlitch);
             }
 
-            float warp = sin((uv.y * 24.0) + (uTime * 4.0)) * (0.006 * uSineWarp);
-            uv.x = fract(uv.x + warp);
+            if (uHeadGlitch > 0.0001) {
+                float headReach = 0.45 * uHeadGlitch;
+                float headZone = step(uv.y, max(0.02, headReach));
+                float headCell = hash(floor(uv * vec2(38.0, 20.0) + vec2(uTime * 10.0, uTime * 6.0)));
+                if (headZone > 0.5 && headCell > 0.75) {
+                    if (headCell > 0.9) {
+                        fragColor = vec4(vec3(0.0), 1.0);
+                        return;
+                    }
+                    uv.x = fract(uv.x + (headCell - 0.5) * 0.15 * uHeadGlitch);
+                }
+            }
 
-            vec2 chroma = vec2(uChromaShift, 0.0);
+            if (uSineWarp > 0.0001) {
+                float warp = sin((uv.y * 24.0) + (uTime * 4.0)) * (0.006 * uSineWarp);
+                uv.x = fract(uv.x + warp);
+            }
+
             vec3 color;
-            color.r = texture(uTexture, clamp(uv + chroma, vec2(0.0), vec2(1.0))).r;
-            color.g = texture(uTexture, uv).g;
-            color.b = texture(uTexture, clamp(uv - chroma, vec2(0.0), vec2(1.0))).b;
+            if (uChromaShift > 0.0001) {
+                vec2 chroma = vec2(uChromaShift, 0.0);
+                color.r = texture(uTexture, clamp(uv + chroma, vec2(0.0), vec2(1.0))).r;
+                color.g = texture(uTexture, uv).g;
+                color.b = texture(uTexture, clamp(uv - chroma, vec2(0.0), vec2(1.0))).b;
+            } else {
+                color = texture(uTexture, uv).rgb;
+            }
 
-            if (uColorBleed > 0.0) {
+            if (uColorBleed > 0.0001) {
                 vec3 bleedL = texture(uTexture, clamp(uv - vec2(pixel.x * 2.0, 0.0), vec2(0.0), vec2(1.0))).rgb;
                 vec3 bleedR = texture(uTexture, clamp(uv + vec2(pixel.x * 2.0, 0.0), vec2(0.0), vec2(1.0))).rgb;
                 color = mix(color, (bleedL + color + bleedR) / 3.0, clamp(uColorBleed, 0.0, 1.0));
             }
 
-            float psLine = step(0.72, hash(vec2(floor(uv.y * 170.0), floor(uTime * 14.0))));
-            if (psLine > 0.5 && uPixelSort > 0.0) {
-                color = mix(color, sortChannels(color), uPixelSort * 0.9);
+            if (uPixelSort > 0.0001) {
+                vec2 cell = floor(uv * vec2(42.0, 22.0) + vec2(floor(uTime * 14.0), floor(uTime * 9.0)));
+                float gate = step(0.80 - (uPixelSort * 0.35), hash(cell));
+                if (gate > 0.5) {
+                    vec3 alt = texture(uTexture, vec2(uv.x, clamp(uv.y + pixel.y * 8.0, 0.0, 1.0))).rgb;
+                    color = mix(color, sortChannels(mix(color, alt, 0.7)), clamp(uPixelSort, 0.0, 1.0));
+                }
             }
 
-            float line = step(0.5, fract((gl_FragCoord.y + uTime * 20.0) * 0.5));
-            float flickerWave = 0.94 + 0.06 * sin(uTime * 24.0 + gl_FragCoord.y * 0.12);
-            float interlace = mix(1.0, line * flickerWave + (1.0 - line), clamp(uInterlaceFlicker, 0.0, 1.0));
-            color *= interlace;
+            if (uInterlaceFlicker > 0.0001) {
+                vec3 ghost = texture(uTexture, vec2(fract(uv.x + pixel.x * (2.0 + uInterlaceFlicker * 4.0)), uv.y)).rgb;
+                float blend = uInterlaceFlicker * 0.35 * (0.5 + 0.5 * sin(uTime * 18.0));
+                float odd = step(0.5, fract(gl_FragCoord.y * 0.5));
+                color = mix(color, mix(color, ghost, blend), odd);
+            }
 
-            float noise = hash(floor((uv + vec2(uTime)) * uResolution / max(uGrainSize, 1.0)));
-            color += (noise - 0.5) * (0.25 * uGrainAmount);
+            if (uGrainAmount > 0.0001) {
+                float noise = hash(floor((uv + vec2(uTime)) * uResolution / max(uGrainSize, 1.0)));
+                color += (noise - 0.5) * (0.25 * uGrainAmount);
+            }
 
             vec3 modifiedColor = clamp(color, 0.0, 1.0);
             fragColor = vec4(modifiedColor, 1.0);
