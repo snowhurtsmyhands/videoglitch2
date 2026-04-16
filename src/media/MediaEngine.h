@@ -7,6 +7,7 @@
 #include <QString>
 #include <QTimer>
 #include <QElapsedTimer>
+#include <deque>
 
 class AppState;
 
@@ -45,6 +46,7 @@ signals:
 
 private slots:
     void pollBus();
+    void renderTick();
     void onAppStateChanged();
 
 private:
@@ -52,8 +54,13 @@ private:
     void emitPlaybackSnapshot();
     void updatePreviewAudioState();
     void refreshPreviewFromCachedRaw();
+    void processAndEmitFrame(const QImage& rawFrame, qint64 ptsMs);
     void emitPerfUpdate();
-    double targetPreviewFps() const;
+
+    struct DecodedFrame {
+        QImage image;
+        qint64 ptsMs = -1;
+    };
 
 #ifdef AKERA_HAS_GSTREAMER
     struct GstHandles {
@@ -85,16 +92,15 @@ private:
     bool m_lastDegraded = false;
     QString m_lastDegradeText;
     QTimer m_pollTimer;
+    QTimer m_renderTimer;
 
     // Thread-safe pending frame: written by GStreamer thread, consumed by poll timer on main thread
     QMutex m_pendingMutex;
-    QImage m_pendingFrame;
-    bool m_hasPendingFrame = false;
-    qint64 m_pendingPtsMs = -1;
+    std::deque<DecodedFrame> m_pendingFrames;
+    std::deque<DecodedFrame> m_decodedFrames;
     QImage m_latestRawFrame;
     qint64 m_latestRawPtsMs = 0;
     bool m_refreshQueued = false;
-    qint64 m_nextFrameDueMs = 0;
     QElapsedTimer m_wallClock;
     qint64 m_perfWindowStartMs = 0;
     int m_displayedFrameCount = 0;
