@@ -114,15 +114,17 @@ void ExportWorker::run()
         QStringLiteral("-i"), QStringLiteral("-"),
         QStringLiteral("-i"), m_inputPath,
         QStringLiteral("-map"), QStringLiteral("0:v:0"),
-        QStringLiteral("-map"), QStringLiteral("1:a?")
+        QStringLiteral("-map"), QStringLiteral("1:a?"),
+        QStringLiteral("-vsync"), QStringLiteral("cfr"),
+        QStringLiteral("-fps_mode"), QStringLiteral("cfr")
     };
 
     const bool useNvenc = hasNvenc();
     if (useNvenc) {
         // NVENC CQ: lower = better quality / larger file
-        int cq = 28; // Balanced
-        if (m_quality == AppState::ExportQuality::Small) cq = 34;
-        if (m_quality == AppState::ExportQuality::High)  cq = 22;
+        int cq = 27; // Balanced
+        if (m_quality == AppState::ExportQuality::Small) cq = 30;
+        if (m_quality == AppState::ExportQuality::High)  cq = 23;
         encoderArgs << QStringLiteral("-c:v") << QStringLiteral("h264_nvenc")
                     << QStringLiteral("-preset") << QStringLiteral("p5")
                     << QStringLiteral("-cq") << QString::number(cq)
@@ -130,15 +132,15 @@ void ExportWorker::run()
                     << QStringLiteral("-pix_fmt") << QStringLiteral("yuv420p");
     } else {
         // libx264 CRF: higher = more compression / smaller file
-        int crf = 23;   // Balanced — was 22, ~30% smaller output
-        QString preset = QStringLiteral("faster"); // was "medium"; faster encodes smaller too
+        int crf = 23;   // Balanced
+        QString preset = QStringLiteral("medium");
         if (m_quality == AppState::ExportQuality::Small) {
             crf = 28;
-            preset = QStringLiteral("fast");
+            preset = QStringLiteral("faster");
         }
         if (m_quality == AppState::ExportQuality::High) {
-            crf = 18;
-            preset = QStringLiteral("medium"); // keep medium for quality
+            crf = 19;
+            preset = QStringLiteral("slow");
         }
         encoderArgs << QStringLiteral("-c:v") << QStringLiteral("libx264")
                     << QStringLiteral("-preset") << preset
@@ -151,7 +153,7 @@ void ExportWorker::run()
         encoderArgs << QStringLiteral("-c:a") << QStringLiteral("aac")
                     << QStringLiteral("-b:a") << QStringLiteral("128k");
     }
-    encoderArgs << QStringLiteral("-shortest") << m_outputPath;
+    encoderArgs << m_outputPath;
 
     QProcess encoder;
     encoder.setProcessChannelMode(QProcess::SeparateChannels);
@@ -163,7 +165,7 @@ void ExportWorker::run()
         return;
     }
 
-    const auto cfg = PreviewEffects::buildRuntimePreviewCfg(m_fx, false);
+    const auto cfg = PreviewEffects::buildRuntimeExportCfg(m_fx);
     QByteArray raw;
     raw.reserve(static_cast<int>(frameSize * 2));
     qint64 frameIndex = 0;
@@ -182,7 +184,7 @@ void ExportWorker::run()
             QImage processed = PreviewEffects::applyExport(src.copy(), cfg, frameIndex);
 
             encoder.write(reinterpret_cast<const char*>(processed.constBits()), static_cast<qint64>(processed.sizeInBytes()));
-            if (!encoder.waitForBytesWritten(10000)) {
+            if (encoder.bytesToWrite() > static_cast<qint64>(frameSize * 10) && !encoder.waitForBytesWritten(10000)) {
                 emit finished(false, QStringLiteral("Failed writing frame to ffmpeg encoder."));
                 decoder.kill();
                 encoder.kill();

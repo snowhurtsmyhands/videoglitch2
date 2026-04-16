@@ -12,6 +12,7 @@ public:
     explicit PreviewWidget(AppState* state, QWidget* parent = nullptr);
 
     void setFrame(const QImage& image);
+    void setPlaybackPositionMs(qint64 positionMs);
 
 signals:
     void browseRequested();
@@ -26,4 +27,5 @@ private:
 
     AppState* m_state;
     QImage m_frame;
+    qint64 m_positionMs = 0;
 };

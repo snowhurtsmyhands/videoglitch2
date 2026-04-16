@@ -150,29 +150,38 @@ void fxHeadGlitch(QImage& frame, int v, int size, qint64 fidx, double rectScale,
 {
     if (v <= 0) return;
     FastRng rng(static_cast<quint32>(fidx * 31 + 7));
-    if (rng.next01() > (v / 80.0)) return;
+    if (rng.next01() > std::clamp(v / 85.0, 0.0, 1.0)) return;
 
     const int h = frame.height();
     const int w = frame.width();
-    const double sizeScale = 0.5 + (size / 100.0) * 0.9;
-    const int reach = static_cast<int>((v / 100.0) * h * 0.45 * zoneScale * sizeScale);
-    const int zoneH = std::max(2, std::min(h, reach));
-    const int passes = std::max(1, static_cast<int>((v / 14.0) * rectScale));
+    const double intensity = std::clamp(v / 100.0, 0.0, 1.0);
+    const double sizeScale = 0.35 + (size / 100.0) * 1.35;
+    const int zoneH = std::clamp(static_cast<int>(h * (0.05 + 0.26 * sizeScale) * zoneScale), 2, h);
+    const int passes = std::max(1, static_cast<int>((2.0 + intensity * 20.0) * rectScale));
+    const int minBlock = std::max(2, static_cast<int>(std::round(2.0 + sizeScale * 2.6)));
+    const int maxBlock = std::max(minBlock + 1, static_cast<int>(std::round(8.0 + sizeScale * 12.0)));
 
     for (int i = 0; i < passes; ++i) {
         const int y = rng.nextInt(0, std::max(0, zoneH - 1));
         const int x = rng.nextInt(0, std::max(0, w - 2));
-        const int base = rng.nextInt(3, std::max(4, static_cast<int>(12 * sizeScale)));
-        const int bh = std::min(h - y, base + rng.nextInt(0, 3));
-        const int bw = std::min(w - x, base + rng.nextInt(0, 3));
-        const bool noiseRect = rng.next01() < 0.4;
+        const int base = rng.nextInt(minBlock, maxBlock);
+        const int bh = std::min(h - y, std::max(1, base + rng.nextInt(-base / 3, base / 2)));
+        const int bw = std::min(w - x, std::max(1, base + rng.nextInt(-base / 3, base / 2)));
+        const bool noiseRect = rng.next01() < 0.45;
+        const int darkJitter = rng.nextInt(0, static_cast<int>(55.0 * intensity + 1.0));
         for (int yy = y; yy < y + bh; ++yy) {
             QRgb* row = reinterpret_cast<QRgb*>(frame.scanLine(yy));
             for (int xx = x; xx < x + bw; ++xx) {
                 if (noiseRect) {
-                    row[xx] = qRgba(rng.nextInt(0, 255), rng.nextInt(0, 255), rng.nextInt(0, 255), qAlpha(row[xx]));
+                    const int mix = rng.nextInt(35, 160);
+                    row[xx] = qRgba(
+                        clip8((qRed(row[xx]) * (255 - mix) + rng.nextInt(0, 255) * mix) / 255),
+                        clip8((qGreen(row[xx]) * (255 - mix) + rng.nextInt(0, 255) * mix) / 255),
+                        clip8((qBlue(row[xx]) * (255 - mix) + rng.nextInt(0, 255) * mix) / 255),
+                        qAlpha(row[xx]));
                 } else {
-                    row[xx] = qRgba(0, 0, 0, qAlpha(row[xx]));
+                    const int blackout = rng.nextInt(0, darkJitter);
+                    row[xx] = qRgba(blackout, blackout, blackout, qAlpha(row[xx]));
                 }
             }
         }
@@ -306,10 +315,10 @@ RuntimePreviewConfig buildRuntimePreviewCfg(const AppState::EffectSettings& fx, 
 
     if (fx.previewMode == AppState::PreviewMode::Draft) {
         cfg.trackingScale = 0.6;
-        cfg.glitchScale = 0.55;
-        cfg.headRectScale = 0.45;
-        cfg.headZoneScale = 0.55;
-        cfg.pixelPassScale = 0.3;
+        cfg.glitchScale = 0.45;
+        cfg.headRectScale = 0.38;
+        cfg.headZoneScale = 0.5;
+        cfg.pixelPassScale = 0.24;
         cfg.sineLite = true;
         cfg.degraded = true;
         cfg.reasons << QStringLiteral("simplify:tracking")
@@ -317,23 +326,36 @@ RuntimePreviewConfig buildRuntimePreviewCfg(const AppState::EffectSettings& fx, 
                     << QStringLiteral("simplify:head")
                     << QStringLiteral("simplify:pixel-sort");
     } else if (fx.previewMode == AppState::PreviewMode::Balanced) {
-        cfg.trackingScale = 0.8;
+        cfg.trackingScale = 0.86;
         cfg.glitchScale = 0.72;
-        cfg.headRectScale = 0.58;
-        cfg.headZoneScale = 0.8;
-        cfg.pixelPassScale = 0.32;
+        cfg.headRectScale = 0.62;
+        cfg.headZoneScale = 0.78;
+        cfg.pixelPassScale = 0.38;
         cfg.sineLite = true;
         cfg.degraded = true;
         cfg.reasons << QStringLiteral("simplify:head")
                     << QStringLiteral("simplify:pixel-sort");
     } else if (fx.previewMode == AppState::PreviewMode::Ultra) {
-        cfg.trackingScale = 1.0;
-        cfg.glitchScale = 0.92;
-        cfg.headRectScale = 0.9;
-        cfg.headZoneScale = 1.0;
-        cfg.pixelPassScale = 0.9;
-        cfg.reasons << QStringLiteral("ultra:full-fx");
+        cfg.trackingScale = 0.95;
+        cfg.glitchScale = 0.84;
+        cfg.headRectScale = 0.78;
+        cfg.headZoneScale = 0.92;
+        cfg.pixelPassScale = 0.7;
+        cfg.reasons << QStringLiteral("ultra:optimized-preview");
     }
+    return cfg;
+}
+
+RuntimePreviewConfig buildRuntimeExportCfg(const AppState::EffectSettings& fx)
+{
+    RuntimePreviewConfig cfg;
+    cfg.fx = fx;
+    cfg.trackingScale = 1.0;
+    cfg.glitchScale = 1.0;
+    cfg.headRectScale = 1.0;
+    cfg.headZoneScale = 1.0;
+    cfg.pixelPassScale = 1.0;
+    cfg.sineLite = false;
     return cfg;
 }
 

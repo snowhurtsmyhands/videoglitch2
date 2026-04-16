@@ -7,7 +7,7 @@ set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 set(CMAKE_AUTOUIC ON)
 
-find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets)
+find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets OpenGLWidgets)
 find_package(PkgConfig QUIET)
 
 set(APP_SOURCES
@@ -16,8 +16,8 @@ set(APP_SOURCES
     src/app/MainWindow.cpp
     src/app/AppState.h
     src/app/AppState.cpp
-    src/ui/PreviewWidget.h
-    src/ui/PreviewWidget.cpp
+    src/ui/PreviewGLWidget.h
+    src/ui/PreviewGLWidget.cpp
     src/ui/ControlPanel.h
     src/ui/ControlPanel.cpp
     src/ui/TransportBar.h
@@ -35,7 +35,7 @@ set(APP_SOURCES
 add_executable(AkeraGlitchStudio WIN32 ${APP_SOURCES})
 
 target_include_directories(AkeraGlitchStudio PRIVATE src)
-target_link_libraries(AkeraGlitchStudio PRIVATE Qt6::Core Qt6::Gui Qt6::Widgets)
+target_link_libraries(AkeraGlitchStudio PRIVATE Qt6::Core Qt6::Gui Qt6::Widgets Qt6::OpenGLWidgets)
 
 if (PkgConfig_FOUND)
     pkg_check_modules(GSTREAMER QUIET IMPORTED_TARGET

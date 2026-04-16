@@ -221,6 +221,11 @@ void AppState::setFlickerAmount(int value)
     emit stateChanged();
 }
 
+void AppState::notifyStateChanged()
+{
+    emit stateChanged();
+}
+
 AppState::EffectSettings AppState::effectSettings() const
 {
     EffectSettings fx;

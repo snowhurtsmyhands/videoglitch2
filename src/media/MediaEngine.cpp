@@ -1,10 +1,9 @@
 #include "media/MediaEngine.h"
 
 #include "app/AppState.h"
-#include "effects/PreviewEffects.h"
 
-#include <QDateTime>
 #include <QFileInfo>
+#include <QDebug>
 #include <QElapsedTimer>
 #include <QLinearGradient>
 #include <QPainter>
@@ -39,8 +38,12 @@ MediaEngine::MediaEngine(AppState* state, QObject* parent)
 
     connect(&m_pollTimer, &QTimer::timeout, this, &MediaEngine::pollBus);
     m_pollTimer.setInterval(8); // 8ms polling (~125Hz) so Ultra (60fps) has headroom
+    connect(&m_renderTimer, &QTimer::timeout, this, &MediaEngine::renderTick);
+    m_renderTimer.setInterval(16); // ~60Hz render pacing independent from decode cadence
+    m_wallClock.start();
+    m_perfWindowStartMs = 0;
     if (m_state) {
-        connect(m_state, &AppState::stateChanged, this, &MediaEngine::updatePreviewAudioState);
+        connect(m_state, &AppState::stateChanged, this, &MediaEngine::onAppStateChanged);
     }
 }
 
@@ -60,6 +63,8 @@ bool MediaEngine::loadFile(const QString& path)
 
     m_currentFrame = makePlaceholderFrame(path);
     emit frameReady(m_currentFrame);
+    m_latestRawFrame = m_currentFrame;
+    m_latestRawPtsMs = 0;
 
 #ifdef AKERA_HAS_GSTREAMER
     if (!setupPipeline()) {
@@ -74,16 +79,23 @@ bool MediaEngine::loadFile(const QString& path)
     m_isPlaying = false;
     m_positionMs = 0;
     m_durationMs = 0;
-    m_frameIndex = 0;
-    m_rawFrameIndex = 0;
     m_frameDropCount = 0;
-    m_effectSkipCount = 0;
-    m_effectCostMs = 0.0;
-    m_lastDegraded = false;
-    m_lastDegradeText.clear();
+    m_renderSkipCount = 0;
+    m_latestRawFrame = QImage{};
+    m_latestRawPtsMs = 0;
+    {
+        QMutexLocker lock(&m_pendingMutex);
+        m_pendingFrames.clear();
+    }
+    m_decodedFrames.clear();
+    m_displayedFrameCount = 0;
+    m_displayFps = 0.0;
+    m_presentPausedFrameRequested = true;
+    m_perfWindowStartMs = m_wallClock.elapsed();
 
     gst_element_set_state(m_gst->playbin, GST_STATE_PAUSED);
     m_pollTimer.start();
+    m_renderTimer.start();
 
     emit statusChanged(QStringLiteral("Loaded %1").arg(QFileInfo(path).fileName()));
     emitPlaybackSnapshot();
@@ -155,8 +167,54 @@ void MediaEngine::setPositionMs(qint64 value)
     gst_element_seek_simple(
         m_gst->playbin,
         GST_FORMAT_TIME,
-        static_cast<GstSeekFlags>(GST_SEEK_FLAG_FLUSH | GST_SEEK_FLAG_KEY_UNIT),
+        static_cast<GstSeekFlags>(GST_SEEK_FLAG_FLUSH | GST_SEEK_FLAG_KEY_UNIT | GST_SEEK_FLAG_ACCURATE),
         target);
+    {
+        QMutexLocker lock(&m_pendingMutex);
+        m_pendingFrames.clear();
+    }
+    m_decodedFrames.clear();
+    m_renderSkipCount = 0;
+    m_positionMs = qMax<qint64>(0, value);
+    emit positionChanged(m_positionMs, m_durationMs);
+
+    if (!m_isPlaying && m_gst->appsink) {
+        qDebug() << "paused seek requested targetMs=" << m_positionMs;
+        GstSample* sample = gst_app_sink_try_pull_preroll(GST_APP_SINK(m_gst->appsink), 50000);
+        if (sample) {
+            GstCaps* caps = gst_sample_get_caps(sample);
+            GstBuffer* buffer = gst_sample_get_buffer(sample);
+            if (caps && buffer) {
+                GstStructure* s = gst_caps_get_structure(caps, 0);
+                int width = 0;
+                int height = 0;
+                const char* format = gst_structure_get_string(s, "format");
+                gst_structure_get_int(s, "width", &width);
+                gst_structure_get_int(s, "height", &height);
+                GstMapInfo map{};
+                if (gst_buffer_map(buffer, &map, GST_MAP_READ)) {
+                    const int bytesPerLine = width * 4;
+                    QImage frame;
+                    if (format && QByteArray(format) == "BGRA") {
+                        frame = QImage(map.data, width, height, bytesPerLine, QImage::Format_ARGB32).copy();
+                    } else {
+                        frame = QImage(map.data, width, height, bytesPerLine, QImage::Format_RGB32).copy();
+                    }
+                    qint64 ptsMs = qMax<qint64>(0, value);
+                    if (GST_BUFFER_PTS_IS_VALID(buffer)) {
+                        ptsMs = static_cast<qint64>(GST_BUFFER_PTS(buffer) / GST_MSECOND);
+                    }
+                    gst_buffer_unmap(buffer, &map);
+                    if (!frame.isNull()) {
+                        qDebug() << "paused seek pulled preroll frame ptsMs=" << ptsMs;
+                        processAndEmitFrame(frame, ptsMs);
+                    }
+                }
+            }
+            gst_sample_unref(sample);
+        }
+        m_presentPausedFrameRequested = true;
+    }
 #else
     m_positionMs = value;
     emit positionChanged(m_positionMs, m_durationMs);
@@ -209,45 +267,77 @@ void MediaEngine::pollBus()
     }
 
     updatePosition();
-
-    // --- Process pending frame on the main thread (thread-safe handoff from GStreamer callback) ---
-    QImage rawFrame;
+    std::deque<DecodedFrame> drained;
     {
         QMutexLocker lock(&m_pendingMutex);
-        if (m_hasPendingFrame) {
-            rawFrame = std::move(m_pendingFrame);
-            m_hasPendingFrame = false;
+        if (!m_pendingFrames.empty()) {
+            drained.swap(m_pendingFrames);
+        }
+    }
+    if (!drained.empty()) {
+        for (auto& frame : drained) {
+            if (!frame.image.isNull()) {
+                m_decodedFrames.emplace_back(std::move(frame));
+            }
+        }
+        constexpr size_t kMaxBufferedFrames = 180;
+        while (m_decodedFrames.size() > kMaxBufferedFrames) {
+            m_decodedFrames.pop_front();
+            ++m_frameDropCount;
         }
     }
 
-    if (!rawFrame.isNull()) {
-        // FPS cap: skip if we emitted a frame too recently
-        const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
-        const double targetFps = targetPreviewFps();
-        const qint64 minIntervalMs = static_cast<qint64>(1000.0 / targetFps);
-        if (nowMs - m_lastFrameEmitMs < minIntervalMs) {
-            ++m_effectSkipCount;
-            emitPerfUpdate();
-        } else {
-            if (m_state) {
-                const auto runtimeCfg = PreviewEffects::buildRuntimePreviewCfg(m_state->effectSettings(), m_isPlaying);
-
-                QElapsedTimer timer;
-                timer.start();
-                m_currentFrame = PreviewEffects::applyPreview(rawFrame, runtimeCfg, m_frameIndex++);
-                const double elapsedMs = static_cast<double>(timer.nsecsElapsed()) / 1e6;
-                m_effectCostMs = (m_effectCostMs <= 0.0) ? elapsedMs : (m_effectCostMs * 0.88 + elapsedMs * 0.12);
-                m_lastDegraded = runtimeCfg.degraded;
-                m_lastDegradeText = runtimeCfg.reasons.join(QStringLiteral(", "));
-            } else {
-                m_currentFrame = rawFrame;
+    if (!m_isPlaying && m_presentPausedFrameRequested && !m_decodedFrames.empty()) {
+        DecodedFrame selected = m_decodedFrames.front();
+        for (const auto& frame : m_decodedFrames) {
+            if (frame.ptsMs >= 0 && frame.ptsMs <= m_positionMs) {
+                selected = frame;
+            } else if (frame.ptsMs > m_positionMs) {
+                break;
             }
-            m_lastFrameEmitMs = nowMs;
-            emit frameReady(m_currentFrame);
-            emitPerfUpdate();
         }
+        qDebug() << "paused seek presenting buffered frame ptsMs=" << selected.ptsMs << " clockMs=" << m_positionMs;
+        processAndEmitFrame(selected.image, selected.ptsMs);
+        m_presentPausedFrameRequested = false;
     }
 #endif
+}
+
+void MediaEngine::renderTick()
+{
+#ifdef AKERA_HAS_GSTREAMER
+    if (!m_hasPlayableMedia) {
+        return;
+    }
+    if (!m_isPlaying) {
+        // Paused: keep current frame visible, no skip accumulation and no playback-clock advancement by render loop.
+        emitPerfUpdate();
+        return;
+    }
+
+    const qint64 clockMs = std::max<qint64>(0, m_positionMs);
+    DecodedFrame selected;
+    bool found = false;
+    while (!m_decodedFrames.empty() && m_decodedFrames.front().ptsMs >= 0 && m_decodedFrames.front().ptsMs <= clockMs) {
+        selected = std::move(m_decodedFrames.front());
+        m_decodedFrames.pop_front();
+        found = true;
+    }
+
+    if (!found) {
+        // If decode is behind, keep showing the previous frame without blocking.
+        ++m_renderSkipCount;
+        emitPerfUpdate();
+        return;
+    }
+
+    processAndEmitFrame(selected.image, selected.ptsMs);
+#endif
+}
+
+void MediaEngine::onAppStateChanged()
+{
+    updatePreviewAudioState();
 }
 
 void MediaEngine::emitPlaybackSnapshot()
@@ -255,17 +345,6 @@ void MediaEngine::emitPlaybackSnapshot()
     emit playbackStateChanged(m_isPlaying);
     emit positionChanged(m_positionMs, m_durationMs);
     emitPerfUpdate();
-}
-
-double MediaEngine::targetPreviewFps() const
-{
-    if (!m_state) return 30.0;
-    switch (m_state->previewMode()) {
-    case AppState::PreviewMode::Draft:    return 30.0;  // was 24 — Draft effects are cheap now
-    case AppState::PreviewMode::Balanced: return 30.0;
-    case AppState::PreviewMode::Ultra:    return 60.0;
-    }
-    return 30.0;
 }
 
 void MediaEngine::updatePreviewAudioState()
@@ -278,9 +357,39 @@ void MediaEngine::updatePreviewAudioState()
     emitPerfUpdate();
 }
 
+void MediaEngine::processAndEmitFrame(const QImage& rawFrame, qint64 ptsMs)
+{
+    if (rawFrame.isNull()) {
+        return;
+    }
+    m_latestRawFrame = rawFrame;
+    if (ptsMs >= 0) {
+        m_latestRawPtsMs = ptsMs;
+        m_positionMs = ptsMs;
+        emit positionChanged(m_positionMs, m_durationMs);
+    }
+
+    m_currentFrame = rawFrame;
+
+    const qint64 nowMs = m_wallClock.elapsed();
+    ++m_displayedFrameCount;
+    if (m_perfWindowStartMs <= 0) {
+        m_perfWindowStartMs = nowMs;
+    }
+    const qint64 perfWindowMs = std::max<qint64>(1, nowMs - m_perfWindowStartMs);
+    if (perfWindowMs >= 500) {
+        m_displayFps = (1000.0 * static_cast<double>(m_displayedFrameCount)) / static_cast<double>(perfWindowMs);
+        m_displayedFrameCount = 0;
+        m_perfWindowStartMs = nowMs;
+    }
+
+    qDebug() << "display frame ptsMs=" << m_latestRawPtsMs << " positionMs=" << m_positionMs;
+    emit frameReady(m_currentFrame);
+    emitPerfUpdate();
+}
+
 void MediaEngine::emitPerfUpdate()
 {
-    const double fps = m_effectCostMs > 0.01 ? 1000.0 / m_effectCostMs : 0.0;
     QString mode = QStringLiteral("Balanced");
     if (m_state) {
         switch (m_state->previewMode()) {
@@ -290,13 +399,13 @@ void MediaEngine::emitPerfUpdate()
         }
     }
     const QString audio = (m_state && m_state->previewAudioEnabled()) ? QStringLiteral("audio:on") : QStringLiteral("audio:off");
-    const QString degrade = m_lastDegradeText.isEmpty() ? QString() : QStringLiteral(" • %1").arg(m_lastDegradeText);
-    emit perfTextChanged(QStringLiteral("%1 • %2 fps • qdrop:%3 • fskip:%4 • %5%6")
+    const QString fpsText = m_isPlaying ? QStringLiteral("%1").arg(m_displayFps, 0, 'f', 1) : QStringLiteral("paused");
+    emit perfTextChanged(QStringLiteral("%1 • %2 fps • qdrop:%3 • rskip:%4 • %5")
                              .arg(mode)
-                             .arg(fps, 0, 'f', 1)
+                             .arg(fpsText)
                              .arg(m_frameDropCount)
-                             .arg(m_effectSkipCount)
-                             .arg(audio, degrade));
+                             .arg(m_renderSkipCount)
+                             .arg(audio));
 }
 
 QImage MediaEngine::makePlaceholderFrame(const QString& path) const
@@ -375,6 +484,7 @@ bool MediaEngine::setupPipeline()
 void MediaEngine::teardownPipeline()
 {
     m_pollTimer.stop();
+    m_renderTimer.stop();
 
     if (!m_gst) {
         return;
@@ -408,6 +518,14 @@ void MediaEngine::handleStateChanged()
     const bool nowPlaying = (state == GST_STATE_PLAYING);
     if (m_isPlaying != nowPlaying) {
         m_isPlaying = nowPlaying;
+        if (!m_isPlaying) {
+            m_displayFps = 0.0;
+            m_displayedFrameCount = 0;
+            m_renderSkipCount = 0;
+            m_presentPausedFrameRequested = true;
+        } else {
+            m_perfWindowStartMs = m_wallClock.elapsed();
+        }
         emit playbackStateChanged(m_isPlaying);
         emitPerfUpdate();
     }
@@ -447,7 +565,6 @@ bool MediaEngine::handleSample()
     if (!sample) {
         return false;
     }
-    ++m_rawFrameIndex;
 
     GstCaps* caps = gst_sample_get_caps(sample);
     GstBuffer* buffer = gst_sample_get_buffer(sample);
@@ -480,14 +597,23 @@ bool MediaEngine::handleSample()
         frame = QImage(map.data, width, height, bytesPerLine, QImage::Format_RGB32).copy();
     }
 
+    qint64 ptsMs = -1;
+    if (GST_BUFFER_PTS_IS_VALID(buffer)) {
+        ptsMs = static_cast<qint64>(GST_BUFFER_PTS(buffer) / GST_MSECOND);
+    }
+
     gst_buffer_unmap(buffer, &map);
     gst_sample_unref(sample);
 
     // Stash for the main thread to pick up in pollBus().
     if (!frame.isNull()) {
         QMutexLocker lock(&m_pendingMutex);
-        m_pendingFrame = std::move(frame);
-        m_hasPendingFrame = true;
+        m_pendingFrames.push_back(DecodedFrame{std::move(frame), ptsMs});
+        constexpr size_t kMaxPendingFrames = 32;
+        while (m_pendingFrames.size() > kMaxPendingFrames) {
+            m_pendingFrames.pop_front();
+            ++m_frameDropCount;
+        }
     }
 
     return true;

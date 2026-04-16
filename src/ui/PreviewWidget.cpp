@@ -3,6 +3,7 @@
 
 #include <QMouseEvent>
 #include <QPainter>
+#include <algorithm>
 
 PreviewWidget::PreviewWidget(AppState* state, QWidget* parent)
     : QWidget(parent), m_state(state)
@@ -16,6 +17,16 @@ PreviewWidget::PreviewWidget(AppState* state, QWidget* parent)
 void PreviewWidget::setFrame(const QImage& image)
 {
     m_frame = image;
+    update();
+}
+
+void PreviewWidget::setPlaybackPositionMs(qint64 positionMs)
+{
+    const qint64 clamped = std::max<qint64>(0, positionMs);
+    if (m_positionMs == clamped) {
+        return;
+    }
+    m_positionMs = clamped;
     update();
 }
 
@@ -67,7 +78,14 @@ void PreviewWidget::mousePressEvent(QMouseEvent* event)
 
 QString PreviewWidget::formatTimeText() const
 {
-    return QStringLiteral("00:00:08");
+    const qint64 totalSec = m_positionMs / 1000;
+    const qint64 hh = totalSec / 3600;
+    const qint64 mm = (totalSec / 60) % 60;
+    const qint64 ss = totalSec % 60;
+    return QStringLiteral("%1:%2:%3")
+        .arg(hh, 2, 10, QLatin1Char('0'))
+        .arg(mm, 2, 10, QLatin1Char('0'))
+        .arg(ss, 2, 10, QLatin1Char('0'));
 }
 
 QRect PreviewWidget::videoRect() const

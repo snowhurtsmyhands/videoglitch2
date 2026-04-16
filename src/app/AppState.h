@@ -102,6 +102,7 @@ public:
     void setHeadGlitchSize(int value);
     int flickerAmount() const;
     void setFlickerAmount(int value);
+    void notifyStateChanged();
 
     EffectSettings effectSettings() const;
 

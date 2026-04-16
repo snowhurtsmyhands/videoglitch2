@@ -6,6 +6,8 @@
 #include <QSize>
 #include <QString>
 #include <QTimer>
+#include <QElapsedTimer>
+#include <deque>
 
 class AppState;
 
@@ -44,13 +46,20 @@ signals:
 
 private slots:
     void pollBus();
+    void renderTick();
+    void onAppStateChanged();
 
 private:
     QImage makePlaceholderFrame(const QString& path) const;
     void emitPlaybackSnapshot();
     void updatePreviewAudioState();
+    void processAndEmitFrame(const QImage& rawFrame, qint64 ptsMs);
     void emitPerfUpdate();
-    double targetPreviewFps() const;
+
+    struct DecodedFrame {
+        QImage image;
+        qint64 ptsMs = -1;
+    };
 
 #ifdef AKERA_HAS_GSTREAMER
     struct GstHandles {
@@ -74,20 +83,22 @@ private:
     bool m_isPlaying = false;
     qint64 m_durationMs = 0;
     qint64 m_positionMs = 0;
-    qint64 m_frameIndex = 0;
-    qint64 m_rawFrameIndex = 0;
     qint64 m_frameDropCount = 0;
-    qint64 m_effectSkipCount = 0;
-    double m_effectCostMs = 0.0;
-    bool m_lastDegraded = false;
-    QString m_lastDegradeText;
+    qint64 m_renderSkipCount = 0;
     QTimer m_pollTimer;
+    QTimer m_renderTimer;
 
     // Thread-safe pending frame: written by GStreamer thread, consumed by poll timer on main thread
     QMutex m_pendingMutex;
-    QImage m_pendingFrame;
-    bool m_hasPendingFrame = false;
-    qint64 m_lastFrameEmitMs = 0;
+    std::deque<DecodedFrame> m_pendingFrames;
+    std::deque<DecodedFrame> m_decodedFrames;
+    QImage m_latestRawFrame;
+    qint64 m_latestRawPtsMs = 0;
+    QElapsedTimer m_wallClock;
+    qint64 m_perfWindowStartMs = 0;
+    int m_displayedFrameCount = 0;
+    double m_displayFps = 0.0;
+    bool m_presentPausedFrameRequested = false;
 
 #ifdef AKERA_HAS_GSTREAMER
     GstHandles* m_gst = nullptr;
