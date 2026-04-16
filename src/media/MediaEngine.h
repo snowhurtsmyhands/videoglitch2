@@ -6,6 +6,7 @@
 #include <QSize>
 #include <QString>
 #include <QTimer>
+#include <QElapsedTimer>
 
 class AppState;
 
@@ -89,9 +90,15 @@ private:
     QMutex m_pendingMutex;
     QImage m_pendingFrame;
     bool m_hasPendingFrame = false;
+    qint64 m_pendingPtsMs = -1;
     QImage m_latestRawFrame;
+    qint64 m_latestRawPtsMs = 0;
     bool m_refreshQueued = false;
-    qint64 m_lastFrameEmitMs = 0;
+    qint64 m_nextFrameDueMs = 0;
+    QElapsedTimer m_wallClock;
+    qint64 m_perfWindowStartMs = 0;
+    int m_displayedFrameCount = 0;
+    double m_displayFps = 0.0;
 
 #ifdef AKERA_HAS_GSTREAMER
     GstHandles* m_gst = nullptr;

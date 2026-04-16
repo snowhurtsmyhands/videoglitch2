@@ -336,13 +336,26 @@ RuntimePreviewConfig buildRuntimePreviewCfg(const AppState::EffectSettings& fx, 
         cfg.reasons << QStringLiteral("simplify:head")
                     << QStringLiteral("simplify:pixel-sort");
     } else if (fx.previewMode == AppState::PreviewMode::Ultra) {
-        cfg.trackingScale = 1.0;
-        cfg.glitchScale = 0.92;
-        cfg.headRectScale = 0.9;
-        cfg.headZoneScale = 1.0;
-        cfg.pixelPassScale = 0.9;
-        cfg.reasons << QStringLiteral("ultra:full-fx");
+        cfg.trackingScale = 0.95;
+        cfg.glitchScale = 0.84;
+        cfg.headRectScale = 0.78;
+        cfg.headZoneScale = 0.92;
+        cfg.pixelPassScale = 0.7;
+        cfg.reasons << QStringLiteral("ultra:optimized-preview");
     }
+    return cfg;
+}
+
+RuntimePreviewConfig buildRuntimeExportCfg(const AppState::EffectSettings& fx)
+{
+    RuntimePreviewConfig cfg;
+    cfg.fx = fx;
+    cfg.trackingScale = 1.0;
+    cfg.glitchScale = 1.0;
+    cfg.headRectScale = 1.0;
+    cfg.headZoneScale = 1.0;
+    cfg.pixelPassScale = 1.0;
+    cfg.sineLite = false;
     return cfg;
 }
 

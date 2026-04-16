@@ -18,6 +18,7 @@ struct RuntimePreviewConfig {
 };
 
 RuntimePreviewConfig buildRuntimePreviewCfg(const AppState::EffectSettings& fx, bool playing);
+RuntimePreviewConfig buildRuntimeExportCfg(const AppState::EffectSettings& fx);
 QImage applyPreview(const QImage& source, const RuntimePreviewConfig& runtimeCfg, qint64 frameIndex);
 QImage applyExport(const QImage& source, const RuntimePreviewConfig& runtimeCfg, qint64 frameIndex);
 }

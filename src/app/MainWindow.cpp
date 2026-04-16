@@ -84,6 +84,7 @@ MainWindow::MainWindow(QWidget* parent)
     connect(m_mediaEngine, &MediaEngine::positionChanged, this, [this](qint64 pos, qint64 dur) {
         m_transportBar->setDurationAndPosition(dur, pos);
         m_transportBar->setFrameText(QStringLiteral("%1 / %2").arg(formatMs(pos)).arg(formatMs(dur)));
+        m_previewWidget->setPlaybackPositionMs(pos);
         // Keep export size estimate in sync whenever duration becomes known
         if (dur > 0) {
             m_controlPanel->updateExportSizeEstimate(dur);

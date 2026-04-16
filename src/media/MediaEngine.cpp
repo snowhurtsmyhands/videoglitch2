@@ -3,7 +3,6 @@
 #include "app/AppState.h"
 #include "effects/PreviewEffects.h"
 
-#include <QDateTime>
 #include <QFileInfo>
 #include <QElapsedTimer>
 #include <QLinearGradient>
@@ -11,6 +10,7 @@
 #include <QPainter>
 #include <QUrl>
 #include <algorithm>
+#include <cmath>
 
 #ifdef AKERA_HAS_GSTREAMER
 #include <gst/video/video.h>
@@ -40,6 +40,8 @@ MediaEngine::MediaEngine(AppState* state, QObject* parent)
 
     connect(&m_pollTimer, &QTimer::timeout, this, &MediaEngine::pollBus);
     m_pollTimer.setInterval(8); // 8ms polling (~125Hz) so Ultra (60fps) has headroom
+    m_wallClock.start();
+    m_perfWindowStartMs = 0;
     if (m_state) {
         connect(m_state, &AppState::stateChanged, this, &MediaEngine::onAppStateChanged);
     }
@@ -62,6 +64,7 @@ bool MediaEngine::loadFile(const QString& path)
     m_currentFrame = makePlaceholderFrame(path);
     emit frameReady(m_currentFrame);
     m_latestRawFrame = m_currentFrame;
+    m_latestRawPtsMs = 0;
 
 #ifdef AKERA_HAS_GSTREAMER
     if (!setupPipeline()) {
@@ -84,6 +87,11 @@ bool MediaEngine::loadFile(const QString& path)
     m_lastDegraded = false;
     m_lastDegradeText.clear();
     m_latestRawFrame = QImage{};
+    m_latestRawPtsMs = 0;
+    m_nextFrameDueMs = 0;
+    m_displayedFrameCount = 0;
+    m_displayFps = 0.0;
+    m_perfWindowStartMs = m_wallClock.elapsed();
 
     gst_element_set_state(m_gst->playbin, GST_STATE_PAUSED);
     m_pollTimer.start();
@@ -215,21 +223,29 @@ void MediaEngine::pollBus()
 
     // --- Process pending frame on the main thread (thread-safe handoff from GStreamer callback) ---
     QImage rawFrame;
+    qint64 rawPtsMs = -1;
     {
         QMutexLocker lock(&m_pendingMutex);
         if (m_hasPendingFrame) {
             rawFrame = std::move(m_pendingFrame);
+            rawPtsMs = m_pendingPtsMs;
             m_hasPendingFrame = false;
         }
     }
 
     if (!rawFrame.isNull()) {
         m_latestRawFrame = rawFrame;
+        if (rawPtsMs >= 0) {
+            m_latestRawPtsMs = rawPtsMs;
+        }
         // FPS cap: skip if we emitted a frame too recently
-        const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
+        const qint64 nowMs = m_wallClock.elapsed();
         const double targetFps = targetPreviewFps();
-        const qint64 minIntervalMs = static_cast<qint64>(1000.0 / targetFps);
-        if (nowMs - m_lastFrameEmitMs < minIntervalMs) {
+        const qint64 minIntervalMs = std::max<qint64>(1, static_cast<qint64>(std::llround(1000.0 / targetFps)));
+        if (m_nextFrameDueMs == 0) {
+            m_nextFrameDueMs = nowMs;
+        }
+        if (nowMs < m_nextFrameDueMs) {
             ++m_effectSkipCount;
             emitPerfUpdate();
         } else {
@@ -246,7 +262,23 @@ void MediaEngine::pollBus()
             } else {
                 m_currentFrame = rawFrame;
             }
-            m_lastFrameEmitMs = nowMs;
+            if (rawPtsMs >= 0) {
+                m_positionMs = rawPtsMs;
+                emit positionChanged(m_positionMs, m_durationMs);
+            }
+            ++m_displayedFrameCount;
+            if (m_perfWindowStartMs <= 0) {
+                m_perfWindowStartMs = nowMs;
+            }
+            const qint64 perfWindowMs = std::max<qint64>(1, nowMs - m_perfWindowStartMs);
+            if (perfWindowMs >= 500) {
+                m_displayFps = (1000.0 * static_cast<double>(m_displayedFrameCount)) / static_cast<double>(perfWindowMs);
+                m_displayedFrameCount = 0;
+                m_perfWindowStartMs = nowMs;
+            }
+
+            const qint64 nextDue = m_nextFrameDueMs + minIntervalMs;
+            m_nextFrameDueMs = (nextDue < nowMs) ? nowMs : nextDue;
             emit frameReady(m_currentFrame);
             emitPerfUpdate();
         }
@@ -314,13 +346,14 @@ void MediaEngine::refreshPreviewFromCachedRaw()
     } else {
         m_currentFrame = m_latestRawFrame;
     }
+    m_positionMs = std::max<qint64>(0, m_latestRawPtsMs);
+    emit positionChanged(m_positionMs, m_durationMs);
     emit frameReady(m_currentFrame);
     emitPerfUpdate();
 }
 
 void MediaEngine::emitPerfUpdate()
 {
-    const double fps = m_effectCostMs > 0.01 ? 1000.0 / m_effectCostMs : 0.0;
     QString mode = QStringLiteral("Balanced");
     if (m_state) {
         switch (m_state->previewMode()) {
@@ -333,7 +366,7 @@ void MediaEngine::emitPerfUpdate()
     const QString degrade = m_lastDegradeText.isEmpty() ? QString() : QStringLiteral(" • %1").arg(m_lastDegradeText);
     emit perfTextChanged(QStringLiteral("%1 • %2 fps • qdrop:%3 • fskip:%4 • %5%6")
                              .arg(mode)
-                             .arg(fps, 0, 'f', 1)
+                             .arg(m_displayFps, 0, 'f', 1)
                              .arg(m_frameDropCount)
                              .arg(m_effectSkipCount)
                              .arg(audio, degrade));
@@ -520,6 +553,11 @@ bool MediaEngine::handleSample()
         frame = QImage(map.data, width, height, bytesPerLine, QImage::Format_RGB32).copy();
     }
 
+    qint64 ptsMs = -1;
+    if (GST_BUFFER_PTS_IS_VALID(buffer)) {
+        ptsMs = static_cast<qint64>(GST_BUFFER_PTS(buffer) / GST_MSECOND);
+    }
+
     gst_buffer_unmap(buffer, &map);
     gst_sample_unref(sample);
 
@@ -527,6 +565,7 @@ bool MediaEngine::handleSample()
     if (!frame.isNull()) {
         QMutexLocker lock(&m_pendingMutex);
         m_pendingFrame = std::move(frame);
+        m_pendingPtsMs = ptsMs;
         m_hasPendingFrame = true;
     }
 
