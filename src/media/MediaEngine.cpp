@@ -1,12 +1,10 @@
 #include "media/MediaEngine.h"
 
 #include "app/AppState.h"
-#include "effects/PreviewEffects.h"
 
 #include <QFileInfo>
 #include <QElapsedTimer>
 #include <QLinearGradient>
-#include <QMetaObject>
 #include <QPainter>
 #include <QUrl>
 #include <algorithm>
@@ -80,13 +78,8 @@ bool MediaEngine::loadFile(const QString& path)
     m_isPlaying = false;
     m_positionMs = 0;
     m_durationMs = 0;
-    m_frameIndex = 0;
-    m_rawFrameIndex = 0;
     m_frameDropCount = 0;
-    m_effectSkipCount = 0;
-    m_effectCostMs = 0.0;
-    m_lastDegraded = false;
-    m_lastDegradeText.clear();
+    m_renderSkipCount = 0;
     m_latestRawFrame = QImage{};
     m_latestRawPtsMs = 0;
     {
@@ -179,7 +172,7 @@ void MediaEngine::setPositionMs(qint64 value)
         m_pendingFrames.clear();
     }
     m_decodedFrames.clear();
-    m_effectSkipCount = 0;
+    m_renderSkipCount = 0;
 
     if (!m_isPlaying && m_gst->appsink) {
         GstSample* sample = gst_app_sink_try_pull_preroll(GST_APP_SINK(m_gst->appsink), 50000);
@@ -312,7 +305,7 @@ void MediaEngine::renderTick()
 
     if (!found) {
         // If decode is behind, keep showing the previous frame without blocking.
-        ++m_effectSkipCount;
+        ++m_renderSkipCount;
         emitPerfUpdate();
         return;
     }
@@ -324,14 +317,6 @@ void MediaEngine::renderTick()
 void MediaEngine::onAppStateChanged()
 {
     updatePreviewAudioState();
-    if (m_refreshQueued) {
-        return;
-    }
-    m_refreshQueued = true;
-    QMetaObject::invokeMethod(this, [this]() {
-        m_refreshQueued = false;
-        refreshPreviewFromCachedRaw();
-    }, Qt::QueuedConnection);
 }
 
 void MediaEngine::emitPlaybackSnapshot()
@@ -351,14 +336,6 @@ void MediaEngine::updatePreviewAudioState()
     emitPerfUpdate();
 }
 
-void MediaEngine::refreshPreviewFromCachedRaw()
-{
-    if (m_latestRawFrame.isNull()) {
-        return;
-    }
-    processAndEmitFrame(m_latestRawFrame, m_latestRawPtsMs);
-}
-
 void MediaEngine::processAndEmitFrame(const QImage& rawFrame, qint64 ptsMs)
 {
     if (rawFrame.isNull()) {
@@ -371,18 +348,7 @@ void MediaEngine::processAndEmitFrame(const QImage& rawFrame, qint64 ptsMs)
         emit positionChanged(m_positionMs, m_durationMs);
     }
 
-    if (m_state) {
-        const auto runtimeCfg = PreviewEffects::buildRuntimePreviewCfg(m_state->effectSettings(), m_isPlaying);
-        QElapsedTimer timer;
-        timer.start();
-        m_currentFrame = PreviewEffects::applyPreview(rawFrame, runtimeCfg, m_frameIndex++);
-        const double elapsedMs = static_cast<double>(timer.nsecsElapsed()) / 1e6;
-        m_effectCostMs = (m_effectCostMs <= 0.0) ? elapsedMs : (m_effectCostMs * 0.88 + elapsedMs * 0.12);
-        m_lastDegraded = runtimeCfg.degraded;
-        m_lastDegradeText = runtimeCfg.reasons.join(QStringLiteral(", "));
-    } else {
-        m_currentFrame = rawFrame;
-    }
+    m_currentFrame = rawFrame;
 
     const qint64 nowMs = m_wallClock.elapsed();
     ++m_displayedFrameCount;
@@ -412,13 +378,12 @@ void MediaEngine::emitPerfUpdate()
     }
     const QString audio = (m_state && m_state->previewAudioEnabled()) ? QStringLiteral("audio:on") : QStringLiteral("audio:off");
     const QString fpsText = m_isPlaying ? QStringLiteral("%1").arg(m_displayFps, 0, 'f', 1) : QStringLiteral("paused");
-    const QString degrade = m_lastDegradeText.isEmpty() ? QString() : QStringLiteral(" • %1").arg(m_lastDegradeText);
-    emit perfTextChanged(QStringLiteral("%1 • %2 fps • qdrop:%3 • fskip:%4 • %5%6")
+    emit perfTextChanged(QStringLiteral("%1 • %2 fps • qdrop:%3 • rskip:%4 • %5")
                              .arg(mode)
                              .arg(fpsText)
                              .arg(m_frameDropCount)
-                             .arg(m_effectSkipCount)
-                             .arg(audio, degrade));
+                             .arg(m_renderSkipCount)
+                             .arg(audio));
 }
 
 QImage MediaEngine::makePlaceholderFrame(const QString& path) const
@@ -534,7 +499,7 @@ void MediaEngine::handleStateChanged()
         if (!m_isPlaying) {
             m_displayFps = 0.0;
             m_displayedFrameCount = 0;
-            m_effectSkipCount = 0;
+            m_renderSkipCount = 0;
             m_decodedFrames.clear();
         } else {
             m_perfWindowStartMs = m_wallClock.elapsed();
@@ -578,7 +543,6 @@ bool MediaEngine::handleSample()
     if (!sample) {
         return false;
     }
-    ++m_rawFrameIndex;
 
     GstCaps* caps = gst_sample_get_caps(sample);
     GstBuffer* buffer = gst_sample_get_buffer(sample);

@@ -5,7 +5,7 @@
 #include "preset/PresetManager.h"
 #include "export/ExportWorker.h"
 #include "ui/ControlPanel.h"
-#include "ui/PreviewWidget.h"
+#include "ui/PreviewGLWidget.h"
 #include "ui/TransportBar.h"
 
 #include <QFileDialog>
@@ -53,7 +53,7 @@ MainWindow::MainWindow(QWidget* parent)
     auto* header = new QLabel(QStringLiteral("// AKERA SKY  GLITCH STUDIO  PREMIUM"), this);
     leftLayout->addWidget(header);
 
-    m_previewWidget = new PreviewWidget(m_state, this);
+    m_previewWidget = new PreviewGLWidget(m_state, this);
     leftLayout->addWidget(m_previewWidget, 1);
 
     m_transportBar = new TransportBar(this);
@@ -71,9 +71,9 @@ MainWindow::MainWindow(QWidget* parent)
     statusBar()->showMessage(QStringLiteral("Ready"));
     m_transportBar->setPerfText(QStringLiteral("Balanced • GStreamer preview • auto aspect"));
 
-    connect(m_previewWidget, &PreviewWidget::browseRequested, this, &MainWindow::browseForVideo);
+    connect(m_previewWidget, &PreviewGLWidget::browseRequested, this, &MainWindow::browseForVideo);
     connect(m_controlPanel, &ControlPanel::exportRequested, this, &MainWindow::onExportRequested);
-    connect(m_mediaEngine, &MediaEngine::frameReady, m_previewWidget, &PreviewWidget::setFrame);
+    connect(m_mediaEngine, &MediaEngine::frameReady, m_previewWidget, &PreviewGLWidget::setFrame);
     connect(m_mediaEngine, &MediaEngine::statusChanged, this, [this](const QString& text) {
         statusBar()->showMessage(text);
     });

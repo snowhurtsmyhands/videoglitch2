@@ -6,7 +6,7 @@ class AppState;
 class ControlPanel;
 class MediaEngine;
 class PresetManager;
-class PreviewWidget;
+class PreviewGLWidget;
 class TransportBar;
 class ExportWorker;
 class QThread;
@@ -27,7 +27,7 @@ private:
     AppState* m_state = nullptr;
     MediaEngine* m_mediaEngine = nullptr;
     PresetManager* m_presetManager = nullptr;
-    PreviewWidget* m_previewWidget = nullptr;
+    PreviewGLWidget* m_previewWidget = nullptr;
     ControlPanel* m_controlPanel = nullptr;
     TransportBar* m_transportBar = nullptr;
     QThread* m_exportThread = nullptr;

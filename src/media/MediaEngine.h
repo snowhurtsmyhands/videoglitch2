@@ -53,7 +53,6 @@ private:
     QImage makePlaceholderFrame(const QString& path) const;
     void emitPlaybackSnapshot();
     void updatePreviewAudioState();
-    void refreshPreviewFromCachedRaw();
     void processAndEmitFrame(const QImage& rawFrame, qint64 ptsMs);
     void emitPerfUpdate();
 
@@ -84,13 +83,8 @@ private:
     bool m_isPlaying = false;
     qint64 m_durationMs = 0;
     qint64 m_positionMs = 0;
-    qint64 m_frameIndex = 0;
-    qint64 m_rawFrameIndex = 0;
     qint64 m_frameDropCount = 0;
-    qint64 m_effectSkipCount = 0;
-    double m_effectCostMs = 0.0;
-    bool m_lastDegraded = false;
-    QString m_lastDegradeText;
+    qint64 m_renderSkipCount = 0;
     QTimer m_pollTimer;
     QTimer m_renderTimer;
 
@@ -100,7 +94,6 @@ private:
     std::deque<DecodedFrame> m_decodedFrames;
     QImage m_latestRawFrame;
     qint64 m_latestRawPtsMs = 0;
-    bool m_refreshQueued = false;
     QElapsedTimer m_wallClock;
     qint64 m_perfWindowStartMs = 0;
     int m_displayedFrameCount = 0;
